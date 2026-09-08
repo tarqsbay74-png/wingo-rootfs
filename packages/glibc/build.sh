@@ -848,3 +848,22 @@ case "$PHASE" in
 
 		install_source_modifications
 		apply_source_changes
+		configure_fake_syscalls
+
+		configure_glibc
+		build_glibc
+		install_glibc
+
+		install_runtime_files
+		build_syscall_without_fsc
+		create_loader_links
+
+		validate
+		package_glibc
+		;;
+
+	*)
+		die "Unknown WINGO_PHASE: $PHASE"
+		;;
+
+esac
