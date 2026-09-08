@@ -1,0 +1,231 @@
+name: Wingo Package Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package directory under packages/"
+        required: true
+        default: "glibc"
+        type: string
+
+run-name: "Build ${{ inputs.package }}"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: "Build ${{ inputs.package }}"
+    runs-on: ubuntu-24.04
+
+    env:
+      PACKAGE_NAME: ${{ inputs.package }}
+      DEBIAN_FRONTEND: noninteractive
+      WINGO_ROOT: ${{ github.workspace }}
+      WINGO_PACKAGES_DIR: ${{ github.workspace }}/packages
+      WINGO_BUILD_DIR: ${{ github.workspace }}/build
+      WINGO_STAGING_DIR: ${{ github.workspace }}/staging
+      WINGO_OUTPUT_DIR: ${{ github.workspace }}/output
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Validate package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE_DIR="$WINGO_PACKAGES_DIR/$PACKAGE_NAME"
+
+          if [[ ! "$PACKAGE_NAME" =~ ^[a-zA-Z0-9._+-]+$ ]]; then
+            echo "ERROR: Invalid package name: $PACKAGE_NAME"
+            exit 1
+          fi
+
+          if [[ ! -d "$PACKAGE_DIR" ]]; then
+            echo "ERROR: Package directory does not exist:"
+            echo "       $PACKAGE_DIR"
+            exit 1
+          fi
+
+          if [[ ! -f "$PACKAGE_DIR/build.sh" ]]; then
+            echo "ERROR: Missing build.sh:"
+            echo "       $PACKAGE_DIR/build.sh"
+            exit 1
+          fi
+
+          echo "Package: $PACKAGE_NAME"
+          echo "Directory: $PACKAGE_DIR"
+
+      - name: Install build environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            autoconf \
+            automake \
+            bison \
+            build-essential \
+            binutils-aarch64-linux-gnu \
+            bzip2 \
+            ca-certificates \
+            cmake \
+            file \
+            flex \
+            gawk \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            gettext \
+            git \
+            libtool \
+            make \
+            patch \
+            perl \
+            python3 \
+            rsync \
+            texinfo \
+            wget \
+            xz-utils \
+            zstd
+
+          sudo apt-get clean
+
+      - name: Prepare build directories
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf \
+            "$WINGO_BUILD_DIR" \
+            "$WINGO_STAGING_DIR" \
+            "$WINGO_OUTPUT_DIR"
+
+          mkdir -p \
+            "$WINGO_BUILD_DIR" \
+            "$WINGO_STAGING_DIR" \
+            "$WINGO_OUTPUT_DIR"
+
+      - name: Make build.sh executable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          chmod +x "$WINGO_PACKAGES_DIR/$PACKAGE_NAME/build.sh"
+
+      - name: Prepare package source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE_DIR="$WINGO_PACKAGES_DIR/$PACKAGE_NAME"
+
+          export WINGO_PHASE="prepare"
+          export WINGO_PACKAGE_DIR="$PACKAGE_DIR"
+
+          "$PACKAGE_DIR/build.sh"
+
+      - name: Locate extracted source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "$WINGO_BUILD_DIR/source-dir" ]]; then
+            echo "ERROR: build.sh did not provide source directory."
+            echo "Expected:"
+            echo "  $WINGO_BUILD_DIR/source-dir"
+            exit 1
+          fi
+
+          SRC_DIR="$(cat "$WINGO_BUILD_DIR/source-dir")"
+
+          if [[ -z "$SRC_DIR" || ! -d "$SRC_DIR" ]]; then
+            echo "ERROR: Invalid source directory:"
+            echo "       $SRC_DIR"
+            exit 1
+          fi
+
+          echo "Source directory:"
+          echo "$SRC_DIR"
+
+          echo "WINGO_SRC_DIR=$SRC_DIR" >> "$GITHUB_ENV"
+
+      - name: Apply all patches
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE_DIR="$WINGO_PACKAGES_DIR/$PACKAGE_NAME"
+          PATCH_COUNT=0
+
+          shopt -s nullglob
+
+          for patch_file in "$PACKAGE_DIR"/*.patch; do
+            PATCH_COUNT=$((PATCH_COUNT + 1))
+
+            echo
+            echo "============================================================"
+            echo "Applying patch: $(basename "$patch_file")"
+            echo "============================================================"
+
+            patch \
+              --batch \
+              --forward \
+              -d "$WINGO_SRC_DIR" \
+              -p1 \
+              < "$patch_file"
+
+            echo "Patch applied successfully."
+          done
+
+          shopt -u nullglob
+
+          echo
+          echo "Applied patches: $PATCH_COUNT"
+
+      - name: Build package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PACKAGE_DIR="$WINGO_PACKAGES_DIR/$PACKAGE_NAME"
+
+          export WINGO_PHASE="build"
+          export WINGO_PACKAGE_DIR="$PACKAGE_DIR"
+          export WINGO_SRC_DIR="$WINGO_SRC_DIR"
+
+          "$PACKAGE_DIR/build.sh"
+
+      - name: Verify output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -d "$WINGO_OUTPUT_DIR" ]]; then
+            echo "ERROR: Output directory does not exist."
+            exit 1
+          fi
+
+          if ! find "$WINGO_OUTPUT_DIR" -type f -print -quit | grep -q .; then
+            echo "ERROR: No package was produced."
+            exit 1
+          fi
+
+          echo
+          echo "============================================================"
+          echo "Build output"
+          echo "============================================================"
+
+          find "$WINGO_OUTPUT_DIR" -type f -printf '%p\t%k KB\n'
+
+      - name: Upload package
+        uses: actions/upload-artifact@v6
+        with:
+          name: wingo-${{ inputs.package }}
+          path: output/
+          if-no-files-found: error
+          compression-level: 0
