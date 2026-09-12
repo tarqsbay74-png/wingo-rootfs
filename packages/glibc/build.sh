@@ -1,161 +1,267 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-GLIBC_DIR="$REPO_DIR/packages/glibc"
-BUILD_DIR="$REPO_DIR/build"
-SRC_ARCHIVE="$BUILD_DIR/glibc-2.44.tar.xz"
-SRC_DIR="$BUILD_DIR/glibc-2.44"
-PREFIX="/usr"
+mkdir -p /build
 
-mkdir -p "$BUILD_DIR"
+echo "==> Installing build dependencies"
+
+apt-get update
+
+apt-get install -y \
+    build-essential \
+    gcc \
+    g++ \
+    binutils \
+    gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu \
+    binutils-aarch64-linux-gnu \
+    make \
+    file \
+    git \
+    wget \
+    curl \
+    xz-utils \
+    bzip2 \
+    tar \
+    patch \
+    sed \
+    gawk \
+    perl \
+    python3 \
+    jq \
+    gettext \
+    texinfo \
+    bison \
+    flex \
+    libgmp-dev \
+    libmpfr-dev \
+    libmpc-dev \
+    linux-libc-dev
+
+echo "==> Checking AArch64 compiler"
+
+command -v aarch64-linux-gnu-gcc
+command -v aarch64-linux-gnu-g++
+command -v aarch64-linux-gnu-ld
+
+echo "Compiler target:"
+aarch64-linux-gnu-gcc -dumpmachine
+
+echo "==> Cleaning previous build"
+
+rm -rf /build/glibc-2.44
+rm -rf /build/glibc-build
+rm -rf /data/data/com.wingo/files/rootfs
+rm -f /build/glibc-2.44.tar.xz
 
 echo "==> Downloading glibc 2.44"
 
-curl -L \
+wget \
     "https://ftp.gnu.org/gnu/glibc/glibc-2.44.tar.xz" \
-    -o "$SRC_ARCHIVE"
+    -O /build/glibc-2.44.tar.xz
 
-echo "==> Verifying source"
+echo "==> Verifying checksum"
 
-echo "37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667  $SRC_ARCHIVE" \
+echo "37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667  /build/glibc-2.44.tar.xz" \
     | sha256sum -c -
 
-echo "==> Extracting source"
+echo "==> Extracting glibc"
 
-rm -rf "$SRC_DIR"
+tar -xf \
+    /build/glibc-2.44.tar.xz \
+    -C /build
 
-tar -xf "$SRC_ARCHIVE" -C "$BUILD_DIR"
+echo "==> Applying patches"
 
-cd "$SRC_DIR"
+cd /build/glibc-2.44
 
-echo "==> Applying patches immediately after extraction"
-
-if compgen -G "$GLIBC_DIR/*.patch" > /dev/null; then
-    for patch_file in "$GLIBC_DIR"/*.patch; do
-        echo "Applying $(basename "$patch_file")"
+for patch_file in /workspace/packages/glibc/*.patch; do
+    if [ -f "$patch_file" ]; then
+        echo "Applying: $patch_file"
         patch -p1 < "$patch_file"
-    done
-fi
+    fi
+done
 
-echo "==> Installing Android-specific source files"
+echo "==> Applying Android modifications"
 
+# Disable clone3 function
 rm -f sysdeps/unix/sysv/linux/*/clone3.S
+
+# Disable editing of ldd script for x86_64
 rm -f sysdeps/unix/sysv/linux/x86_64/configure*
 
-cp "$GLIBC_DIR"/shm{at,ctl,dt,get}.c \
-   "$GLIBC_DIR"/mprotect.c \
-   "$GLIBC_DIR"/syscall.c \
-   "$GLIBC_DIR"/fakesyscall*.h \
-   "$GLIBC_DIR"/fake_epoll_pwait2.c \
-   "$GLIBC_DIR"/setfs{u,g}id.c \
-   sysdeps/unix/sysv/linux/
+# Install special scripts for correct operation of system calls
+cp \
+    /workspace/packages/glibc/shm{at,ctl,dt,get}.c \
+    /workspace/packages/glibc/mprotect.c \
+    /workspace/packages/glibc/syscall.c \
+    /workspace/packages/glibc/fakesyscall*.h \
+    /workspace/packages/glibc/fake_epoll_pwait2.c \
+    /workspace/packages/glibc/setfs{u,g}id.c \
+    sysdeps/unix/sysv/linux/
 
-cp "$GLIBC_DIR"/android_passwd_group.* \
-   "$GLIBC_DIR"/android_system_user_ids.h \
-   nss/
+# Install Android passwd/group handling
+cp \
+    /workspace/packages/glibc/android_passwd_group.* \
+    /workspace/packages/glibc/android_system_user_ids.h \
+    nss/
 
-bash "$GLIBC_DIR/gen-android-ids.sh" \
-    "$REPO_DIR" \
-    nss/android_ids.h \
-    "$GLIBC_DIR/android_system_user_ids.h"
+bash \
+    /workspace/packages/glibc/gen-android-ids.sh \
+    /build \
+    /build/glibc-2.44/nss/android_ids.h \
+    /workspace/packages/glibc/android_system_user_ids.h
 
-cp "$GLIBC_DIR/syslog.c" misc/
+# Install Android-compatible syslog implementation
+cp \
+    /workspace/packages/glibc/syslog.c \
+    misc/
 
-cp "$GLIBC_DIR"/shmem-android.* sysvipc/
+# Install System V shared memory emulation
+cp \
+    /workspace/packages/glibc/shmem-android.* \
+    sysvipc/
 
-for arch in aarch64 arm i386 x86_64/64; do
-    linux_arch="${arch%%/*}"
+# Disable unsupported syscalls
+for i in aarch64; do
 
     mv \
-        "sysdeps/unix/sysv/linux/$linux_arch/syscall.S" \
-        "sysdeps/unix/sysv/linux/$linux_arch/syscallS.S"
+        "sysdeps/unix/sysv/linux/${i}/syscall.S" \
+        "sysdeps/unix/sysv/linux/${i}/syscallS.S"
 
-    disabled_header="sysdeps/unix/sysv/linux/$arch/disabled-syscall.h"
+    header_disabled_syscall="sysdeps/unix/sysv/linux/${i}/disabled-syscall.h"
 
     {
-        for syscall_name in $(jq -r '.[] | .[]' "$GLIBC_DIR/fakesyscall.json"); do
+        for j in $(jq -r '.[] | .[]' \
+            /workspace/packages/glibc/fakesyscall.json); do
+
             grep \
-                "#define __NR_${syscall_name} " \
-                "sysdeps/unix/sysv/linux/$arch/arch-syscall.h" \
+                "#define __NR_${j} " \
+                "sysdeps/unix/sysv/linux/${i}/arch-syscall.h" \
                 || true
 
             sed -i \
-                "/#define __NR_${syscall_name} /d" \
-                "sysdeps/unix/sysv/linux/$arch/arch-syscall.h"
+                "/#define __NR_${j} /d" \
+                "sysdeps/unix/sysv/linux/${i}/arch-syscall.h"
+
         done
-    } >> "$disabled_header"
+    } >> "$header_disabled_syscall"
 
     {
         echo -e "\n#define DISABLED_SYSCALL_WITH_FAKESYSCALL \\"
 
-        IFS=$'\n'
+        while IFS= read -r j; do
 
-        for fake_syscall in $(jq -r '. | keys | .[]' "$GLIBC_DIR/fakesyscall.json"); do
             need_return=false
 
-            for syscall_name in $(jq -r '."'${fake_syscall}'" | .[]' "$GLIBC_DIR/fakesyscall.json"); do
-                if grep -q \
-                    "^#define __NR_${syscall_name} " \
-                    "$disabled_header"; then
+            while IFS= read -r z; do
 
-                    echo -e "\tcase __NR_${syscall_name}: \\"
+                if grep -q \
+                    "^#define __NR_${z} " \
+                    "$header_disabled_syscall"
+                then
+                    echo -e "\tcase __NR_${z}: \\"
                     need_return=true
 
-                elif [[ "$syscall_name" =~ ^[0-9]+$ ]]; then
-
-                    echo -e "\tcase ${syscall_name}: \\"
+                elif [[ "$z" =~ ^[0-9]+$ ]]; then
+                    echo -e "\tcase ${z}: \\"
                     need_return=true
                 fi
-            done
+
+            done < <(
+                jq -r \
+                    '."'${j}'" | .[]' \
+                    /workspace/packages/glibc/fakesyscall.json
+            )
 
             if [ "$need_return" = "true" ]; then
-                echo -e "\t\treturn ${fake_syscall}; \\"
+                echo -e "\t\treturn ${j}; \\"
             fi
-        done
 
-        unset IFS
-    } >> "$disabled_header"
+        done < <(
+            jq -r \
+                '. | keys | .[]' \
+                /workspace/packages/glibc/fakesyscall.json
+        )
 
-    sed -i '$ s| \\||' "$disabled_header"
+    } >> "$header_disabled_syscall"
+
+    sed -i \
+        '$ s| \\||' \
+        "$header_disabled_syscall"
+
 done
 
-echo "==> Replacing Android paths"
-
-for replacement in \
-    "/dev/stderr:/proc/self/fd/2" \
-    "/dev/stdin:/proc/self/fd/0" \
-    "/dev/stdout:/proc/self/fd/1"
+# Replace hard paths that may not exist on Android
+for i in \
+    /dev/stderr:/proc/self/fd/2 \
+    /dev/stdin:/proc/self/fd/0 \
+    /dev/stdout:/proc/self/fd/1
 do
-    old_path="${replacement%%:*}"
-    new_path="${replacement#*:}"
 
-    while IFS= read -r file; do
-        sed -i "s|${old_path}|${new_path}|g" "$file"
-    done < <(grep -s -r -l "$old_path" "$SRC_DIR" || true)
+    while IFS= read -r j; do
+        sed -i \
+            "s|${i%%:*}|${i//*:}|g" \
+            "$j"
+    done < <(
+        grep -s -r -l "${i%%:*}" .
+    )
+
 done
 
-echo "==> Creating build directory"
+echo "==> Android modifications completed"
 
-rm -rf "$BUILD_DIR/build"
-mkdir -p "$BUILD_DIR/build"
+echo "==> Preparing build directory"
 
-cd "$BUILD_DIR/build"
+mkdir -p /build/glibc-build
 
-echo "==> Configuring glibc"
+cd /build/glibc-build
 
-"$SRC_DIR/configure" \
-    --prefix=/usr \
-    --libdir=/usr/lib \
-    --libexecdir=/usr/lib \
-    --includedir=/usr/include \
+echo "slibdir=/data/data/com.wingo/files/rootfs/usr/lib" > configparms
+echo "rtlddir=/data/data/com.wingo/files/rootfs/usr/lib" >> configparms
+echo "sbindir=/data/data/com.wingo/files/rootfs/usr/bin" >> configparms
+echo "rootsbindir=/data/data/com.wingo/files/rootfs/usr/bin" >> configparms
+
+echo "==> Configuring glibc for AArch64"
+
+export CC=aarch64-linux-gnu-gcc
+export CXX=aarch64-linux-gnu-g++
+export AR=aarch64-linux-gnu-gcc-ar
+export RANLIB=aarch64-linux-gnu-gcc-ranlib
+export NM=aarch64-linux-gnu-gcc-nm
+export LD=aarch64-linux-gnu-ld
+export AS=aarch64-linux-gnu-as
+export OBJCOPY=aarch64-linux-gnu-objcopy
+export OBJDUMP=aarch64-linux-gnu-objdump
+export READELF=aarch64-linux-gnu-readelf
+export STRIP=aarch64-linux-gnu-strip
+
+export CFLAGS="-O2 -pipe -fno-plt -fexceptions \
+-Wp,-D_FORTIFY_SOURCE=2 \
+-Wformat \
+-Werror=format-security \
+-fstack-clash-protection \
+-fmarch=armv8-a \
+-fstack-protector-strong"
+
+export CXXFLAGS="$CFLAGS -Wp,-D_GLIBCXX_ASSERTIONS"
+
+../glibc-2.44/configure \
+    --prefix=/data/data/com.wingo/files/rootfs/usr \
+    --libdir=/data/data/com.wingo/files/rootfs/usr/lib \
+    --libexecdir=/data/data/com.wingo/files/rootfs/usr/lib \
+    --includedir=/data/data/com.wingo/files/rootfs/usr/include \
     --host=aarch64-linux-gnu \
     --build=x86_64-linux-gnu \
     --target=aarch64-linux-gnu \
+    --with-bugurl=https://github.com/termux-pacman/glibc-packages/issues \
+    --with-pkgversion="GNU libc for Android" \
     --enable-bind-now \
     --enable-fortify-source \
     --disable-multi-arch \
+    --enable-memory-tagging \
     --enable-stack-protector=strong \
+    --enable-systemtap \
     --disable-nscd \
     --disable-profile \
     --disable-werror \
@@ -163,49 +269,158 @@ echo "==> Configuring glibc"
 
 echo "==> Building glibc"
 
-make -j"$(nproc)"
+make -O
+
+echo "==> Creating rootfs"
+
+mkdir -p /data/data/com.wingo/files/rootfs
 
 echo "==> Installing glibc"
 
-make install DESTDIR="$BUILD_DIR/root"
+make install
 
-echo "==> Installing additional syscall library"
+echo "==> Removing unwanted files"
 
-gcc \
-    "$GLIBC_DIR/syscall.c" \
-    -o "$BUILD_DIR/root/usr/lib/libsyscall_without_fsc.so" \
+rm -f \
+    /data/data/com.wingo/files/rootfs/usr/etc/ld.so.cache \
+    /data/data/com.wingo/files/rootfs/usr/bin/tzselect \
+    /data/data/com.wingo/files/rootfs/usr/bin/zdump \
+    /data/data/com.wingo/files/rootfs/usr/bin/zic
+
+echo "==> Installing tmpfiles configuration"
+
+install -dm755 \
+    /data/data/com.wingo/files/rootfs/usr/lib/tmpfiles.d
+
+install -m644 \
+    /build/glibc-2.44/nscd/nscd.conf \
+    /data/data/com.wingo/files/rootfs/usr/etc/nscd.conf
+
+install -m644 \
+    /build/glibc-2.44/nscd/nscd.tmpfiles \
+    /data/data/com.wingo/files/rootfs/usr/lib/tmpfiles.d/nscd.conf
+
+echo "==> Installing gai.conf"
+
+install -m644 \
+    /build/glibc-2.44/posix/gai.conf \
+    /data/data/com.wingo/files/rootfs/usr/etc/gai.conf
+
+echo "==> Installing locale-gen"
+
+install -m755 \
+    /workspace/packages/glibc/locale-gen \
+    /data/data/com.wingo/files/rootfs/usr/bin/locale-gen
+
+echo "==> Installing locale.gen"
+
+install -m644 \
+    /workspace/packages/glibc/locale.gen.txt \
+    /data/data/com.wingo/files/rootfs/usr/etc/locale.gen
+
+sed \
+    -e '1,3d' \
+    -e 's|/| |g' \
+    -e 's|\\| |g' \
+    -e 's|^|#|g' \
+    /build/glibc-2.44/localedata/SUPPORTED \
+    >> /data/data/com.wingo/files/rootfs/usr/etc/locale.gen
+
+echo "==> Installing SUPPORTED"
+
+sed \
+    -e '1,3d' \
+    -e 's|/| |g' \
+    -e 's| \\||g' \
+    /build/glibc-2.44/localedata/SUPPORTED \
+    > /data/data/com.wingo/files/rootfs/usr/share/i18n/SUPPORTED
+
+install -dm755 \
+    /data/data/com.wingo/files/rootfs/usr/lib/locale
+
+echo "==> Installing locale files"
+
+make \
+    -C /build/glibc-2.44/localedata \
+    objdir=/build/glibc-build \
+    SUPPORTED-LOCALES="C.UTF-8/UTF-8 en_US.UTF-8/UTF-8" \
+    DESTDIR=/data/data/com.wingo/files/rootfs \
+    install-locale-files
+
+sed -i \
+    '/#C\.UTF-8 /d' \
+    /data/data/com.wingo/files/rootfs/usr/etc/locale.gen
+
+echo "==> Installing SystemTap headers"
+
+install -Dm644 \
+    /workspace/packages/glibc/sdt.h \
+    /data/data/com.wingo/files/rootfs/usr/include/sys/sdt.h
+
+install -Dm644 \
+    /workspace/packages/glibc/sdt-config.h \
+    /data/data/com.wingo/files/rootfs/usr/include/sys/sdt-config.h
+
+echo "==> Creating dynamic linker symlinks"
+
+ln -sfr \
+    /data/data/com.wingo/files/rootfs/usr/lib/ld-linux-aarch64.so.1 \
+    /data/data/com.wingo/files/rootfs/usr/bin/ld.so
+
+ln -sfr \
+    /data/data/com.wingo/files/rootfs/usr/lib/ld-linux-aarch64.so.1 \
+    /data/data/com.wingo/files/rootfs/usr/lib/ld.so
+
+echo "==> Building libsyscall_without_fsc.so"
+
+aarch64-linux-gnu-gcc \
+    /workspace/packages/glibc/syscall.c \
+    -o /data/data/com.wingo/files/rootfs/usr/lib/libsyscall_without_fsc.so \
     -shared \
     -DWITHOUT_FAKESYSCALL
 
-echo "==> Creating runtime linker symlinks"
+echo "DONE"
 
-mkdir -p "$BUILD_DIR/root/usr/bin"
-mkdir -p "$BUILD_DIR/root/usr/lib"
+echo "==> Verifying generated binaries"
 
-if [ "$(uname -m)" = "aarch64" ]; then
-    DYNAMIC_LINKER="ld-linux-aarch64.so.1"
-elif [ "$(uname -m)" = "x86_64" ]; then
-    DYNAMIC_LINKER="ld-linux-x86-64.so.2"
-elif [ "$(uname -m)" = "armv7l" ]; then
-    DYNAMIC_LINKER="ld-linux-armhf.so.3"
-else
-    DYNAMIC_LINKER="ld-linux.so.2"
-fi
+file \
+    /data/data/com.wingo/files/rootfs/usr/lib/libc.so.6
 
-ln -sf \
-    "/usr/lib/$DYNAMIC_LINKER" \
-    "$BUILD_DIR/root/usr/bin/ld.so"
+file \
+    /data/data/com.wingo/files/rootfs/usr/lib/ld-linux-aarch64.so.1
 
-ln -sf \
-    "/usr/lib/$DYNAMIC_LINKER" \
-    "$BUILD_DIR/root/usr/lib/ld.so"
+file \
+    /data/data/com.wingo/files/rootfs/usr/lib/libsyscall_without_fsc.so
 
-echo "==> Creating tarball"
+echo "==> Checking ELF architecture"
 
-cd "$BUILD_DIR/root"
+readelf -h \
+    /data/data/com.wingo/files/rootfs/usr/lib/libc.so.6 \
+    | grep -E 'Class|Machine'
 
-tar -cJf "$REPO_DIR/glibc-2.44-rootfs.tar.xz" .
+readelf -h \
+    /data/data/com.wingo/files/rootfs/usr/lib/ld-linux-aarch64.so.1 \
+    | grep -E 'Class|Machine'
 
-echo "==> Done"
+echo "==> Creating rootfs archive"
 
-echo "$REPO_DIR/glibc-2.44-rootfs.tar.xz"
+cd /data/data/com.wingo/files
+
+tar -cJf \
+    /build/glibc-2.44-rootfs.tar.xz \
+    rootfs
+
+echo
+echo "=========================================="
+echo "GLIBC BUILD COMPLETED"
+echo "=========================================="
+echo
+echo "Rootfs:"
+echo "/data/data/com.wingo/files/rootfs"
+echo
+echo "Archive:"
+echo "/build/glibc-2.44-rootfs.tar.xz"
+echo
+echo "Architecture:"
+file \
+    /data/data/com.wingo/files/rootfs/usr/lib/libc.so.6
