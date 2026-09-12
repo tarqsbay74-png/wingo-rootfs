@@ -11,50 +11,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            build-essential \
+            bison \
+            gawk \
+            gettext \
+            texinfo \
+            python3 \
+            python3-dev \
+            perl \
+            rsync \
+            jq \
+            curl \
+            xz-utils \
+            patch
+
+      - name: Check AArch64 cross compiler
+        run: |
+          which aarch64-linux-gnu-gcc
+          aarch64-linux-gnu-gcc --version
+          aarch64-linux-gnu-gcc -dumpmachine
+
+      - name: Build glibc
         run: |
           chmod +x packages/glibc/build.sh
-
-              apt-get update
-
-              apt-get install -y \
-                build-essential \
-                gcc \
-                g++ \
-                binutils \
-                bison \
-                gawk \
-                gettext \
-                texinfo \
-                python3 \
-                python3-dev \
-                perl \
-                rsync \
-                jq \
-                curl \
-                wget \
-                xz-utils \
-                bzip2 \
-                patch \
-                file \
-                make
-
-              echo "=== Build environment ==="
-              uname -m
-              gcc -dumpmachine
-
-              echo "=== Building glibc ==="
-              /workspace/packages/glibc/build.sh
-            '
-
-      - name: Verify artifact
-        run: |
-          ls -lh glibc-2.44-rootfs.tar.xz
-          file glibc-2.44-rootfs.tar.xz
+          packages/glibc/build.sh
 
       - name: Upload glibc rootfs
         uses: actions/upload-artifact@v4
         with:
           name: glibc-2.44-rootfs
           path: glibc-2.44-rootfs.tar.xz
-          if-no-files-found: error
