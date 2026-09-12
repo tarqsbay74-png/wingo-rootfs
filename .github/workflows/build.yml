@@ -11,22 +11,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Build inside Ubuntu 24.04 AArch64
+      - name: Build
         run: |
           chmod +x packages/glibc/build.sh
-
-          docker run --rm \
-            --platform linux/arm64 \
-            -v "$PWD:/workspace" \
-            -w /workspace \
-            ubuntu:24.04 \
-            bash -c '
-              set -e
 
               apt-get update
 
