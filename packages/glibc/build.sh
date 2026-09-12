@@ -10,6 +10,9 @@ GLIBC_TARBALL="${BUILD_DIR}/glibc-${GLIBC_VERSION}.tar.xz"
 GLIBC_ROOTFS_ARCHIVE="${BUILD_DIR}/glibc-${GLIBC_VERSION}-rootfs.tar.xz"
 GLIBC_BUILDER_DIR=/workspace/packages/glibc
 
+BUILD_TRIPLET=x86_64-linux-gnu
+HOST_TRIPLET=aarch64-linux-gnu
+
 mkdir -p "$BUILD_DIR"
 
 echo "==> Installing build dependencies"
@@ -68,7 +71,7 @@ rm -f "$GLIBC_ROOTFS_ARCHIVE"
 echo "==> Downloading glibc ${GLIBC_VERSION}"
 
 wget \
-    "https://ftp.gnu.org/gnu/glibc/glibc-${GLIBC_VERSION}.tar.xz" \
+    "https://ftp.gnu.org/gnu/libc/glibc-${GLIBC_VERSION}.tar.xz" \
     -O "$GLIBC_TARBALL"
 
 echo "==> Verifying checksum"
@@ -78,7 +81,9 @@ echo "37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667  ${GLIBC_
 
 echo "==> Extracting glibc"
 
-tar -xf "$GLIBC_TARBALL" -C "$BUILD_DIR"
+tar -xf \
+    "$GLIBC_TARBALL" \
+    -C "$BUILD_DIR"
 
 echo "==> Applying patches"
 
@@ -95,11 +100,13 @@ echo "==> Applying Android modifications"
 
 echo "==> Disabling clone3 function"
 
-rm -f sysdeps/unix/sysv/linux/*/clone3.S
+rm -f \
+    sysdeps/unix/sysv/linux/*/clone3.S
 
 echo "==> Disabling editing of ldd script for x86_64"
 
-rm -f sysdeps/unix/sysv/linux/x86_64/configure*
+rm -f \
+    sysdeps/unix/sysv/linux/x86_64/configure*
 
 echo "==> Installing special syscall files"
 
@@ -168,14 +175,21 @@ for i in aarch64; do
     } >> "$header_disabled_syscall"
 
     {
-        echo
-        echo '#define DISABLED_SYSCALL_WITH_FAKESYSCALL \'
+        echo -e "\n#define DISABLED_SYSCALL_WITH_FAKESYSCALL \\"
 
-        while IFS= read -r j; do
+        local_ifs_backup="$IFS"
+        IFS=$'\n'
+
+        for j in $(jq -r \
+            '. | keys | .[]' \
+            "$GLIBC_BUILDER_DIR/fakesyscall.json"); do
 
             need_return=false
 
-            while IFS= read -r z; do
+            for z in $(jq -r \
+                --arg key "$j" \
+                '.[$key][]' \
+                "$GLIBC_BUILDER_DIR/fakesyscall.json"); do
 
                 if grep -q \
                     "^#define __NR_${z} " \
@@ -189,25 +203,21 @@ for i in aarch64; do
                     need_return=true
                 fi
 
-            done < <(
-                jq -r --arg key "$j" \
-                    '.[$key][]' \
-                    "$GLIBC_BUILDER_DIR/fakesyscall.json"
-            )
+            done
 
             if [ "$need_return" = "true" ]; then
                 echo -e "\t\treturn ${j}; \\"
             fi
 
-        done < <(
-            jq -r \
-                '. | keys | .[]' \
-                "$GLIBC_BUILDER_DIR/fakesyscall.json"
-        )
+        done
+
+        IFS="$local_ifs_backup"
 
     } >> "$header_disabled_syscall"
 
-    sed -i '$ s| \\||' "$header_disabled_syscall"
+    sed -i \
+        '$ s| \\||' \
+        "$header_disabled_syscall"
 
 done
 
@@ -223,7 +233,9 @@ do
     new_path="${i#*:}"
 
     while IFS= read -r j; do
-        sed -i "s|${old_path}|${new_path}|g" "$j"
+        sed -i \
+            "s|${old_path}|${new_path}|g" \
+            "$j"
     done < <(
         grep -s -r -l "$old_path" .
     )
@@ -238,12 +250,10 @@ mkdir -p "$GLIBC_BUILD"
 
 cd "$GLIBC_BUILD"
 
-cat > configparms <<EOF
-slibdir=${ROOTFS}/usr/lib
-rtlddir=${ROOTFS}/usr/lib
-sbindir=${ROOTFS}/usr/bin
-rootsbindir=${ROOTFS}/usr/bin
-EOF
+echo "slibdir=${ROOTFS}/usr/lib" > configparms
+echo "rtlddir=${ROOTFS}/usr/lib" >> configparms
+echo "sbindir=${ROOTFS}/usr/bin" >> configparms
+echo "rootsbindir=${ROOTFS}/usr/bin" >> configparms
 
 echo "==> Configuring glibc for AArch64"
 
@@ -281,13 +291,25 @@ int main(void)
 }
 EOF
 
-"$CC" "$GLIBC_BUILD/test.c" -o "$GLIBC_BUILD/test"
+"$CC" \
+    "$GLIBC_BUILD/test.c" \
+    -o "$GLIBC_BUILD/test"
 
 file "$GLIBC_BUILD/test"
 
 rm -f \
     "$GLIBC_BUILD/test.c" \
     "$GLIBC_BUILD/test"
+
+echo "==> Preparing configure CFLAGS"
+
+CFLAGS="${CFLAGS/-Wp,-D_FORTIFY_SOURCE=2 / }"
+CFLAGS="${CFLAGS/-Werror / }"
+
+export CFLAGS
+
+echo "Configure CFLAGS:"
+echo "$CFLAGS"
 
 echo "==> Running glibc configure"
 
@@ -296,9 +318,9 @@ echo "==> Running glibc configure"
     --libdir="${ROOTFS}/usr/lib" \
     --libexecdir="${ROOTFS}/usr/lib" \
     --includedir="${ROOTFS}/usr/include" \
-    --host=aarch64-linux-gnu \
-    --build=x86_64-linux-gnu \
-    --target=aarch64-linux-gnu \
+    --host="${HOST_TRIPLET}" \
+    --build="${BUILD_TRIPLET}" \
+    --target="${HOST_TRIPLET}" \
     --with-bugurl=https://github.com/termux-pacman/glibc-packages/issues \
     --with-pkgversion="GNU libc for Android" \
     --enable-bind-now \
@@ -408,12 +430,14 @@ install -Dm644 \
 
 echo "==> Creating dynamic linker symlinks"
 
+PATH_DYNAMIC_LINKER="$ROOTFS/usr/lib/ld-linux-aarch64.so.1"
+
 ln -sfr \
-    "$ROOTFS/usr/lib/ld-linux-aarch64.so.1" \
+    "$PATH_DYNAMIC_LINKER" \
     "$ROOTFS/usr/bin/ld.so"
 
 ln -sfr \
-    "$ROOTFS/usr/lib/ld-linux-aarch64.so.1" \
+    "$PATH_DYNAMIC_LINKER" \
     "$ROOTFS/usr/lib/ld.so"
 
 echo "==> Building libsyscall_without_fsc.so"
