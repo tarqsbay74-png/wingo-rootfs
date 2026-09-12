@@ -149,9 +149,9 @@ echo "==> Configuring glibc"
     --libdir=/usr/lib \
     --libexecdir=/usr/lib \
     --includedir=/usr/include \
-    --host="$(gcc -dumpmachine)" \
-    --build="$(gcc -dumpmachine)" \
-    --target="$(gcc -dumpmachine)" \
+    --host=aarch64-linux-gnu \
+    --build=x86_64-linux-gnu \
+    --target=aarch64-linux-gnu \
     --enable-bind-now \
     --enable-fortify-source \
     --disable-multi-arch \
