@@ -39,8 +39,6 @@ jobs:
         run: |
           chmod +x packages/glibc/build.sh
 
-          sudo cp "$(which qemu-aarch64-static)" /usr/bin/qemu-aarch64-static
-
           packages/glibc/build.sh
 
       - name: Upload glibc rootfs
