@@ -11,7 +11,7 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install build dependencies
@@ -49,7 +49,8 @@ jobs:
             libmpc-dev \
             linux-libc-dev
 
-      - name: Run build.sh
+      - name: Run glibc build
+        working-directory: packages/glibc
         run: |
           chmod +x build.sh
           ./build.sh
@@ -59,3 +60,4 @@ jobs:
         with:
           name: glibc-2.44-rootfs
           path: build/glibc-2.44-rootfs.tar.xz
+          if-no-files-found: error
