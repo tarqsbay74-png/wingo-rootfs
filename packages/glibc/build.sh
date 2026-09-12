@@ -209,6 +209,13 @@ do
 
 done
 
+# Add revision to glibc version
+# Uncomment this if you want a custom package/revision suffix.
+#
+# sed -i \
+#     "s/2\.44/2.44-custom/" \
+#     version.h
+
 echo "==> Android modifications completed"
 
 echo "==> Preparing build directory"
@@ -422,5 +429,6 @@ echo "Archive:"
 echo "/build/glibc-2.44-rootfs.tar.xz"
 echo
 echo "Architecture:"
+
 file \
     /data/data/com.wingo/files/rootfs/usr/lib/libc.so.6
