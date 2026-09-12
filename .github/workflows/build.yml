@@ -11,17 +11,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Build glibc
+      - name: Install QEMU and build dependencies
         run: |
-          chmod +x glibc/build.sh
-          docker run --rm \
-            --platform linux/arm64 \
-            -v "$PWD:/packages" \
-            -w /packages \
-            debian:bookworm \
-            bash /packages/glibc/build.sh
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-user-static \
+            binfmt-support \
+            build-essential \
+            bison \
+            gawk \
+            gettext \
+            texinfo \
+            python3 \
+            python3-dev \
+            perl \
+            rsync \
+            jq \
+            curl \
+            xz-utils \
+            patch
+
+      - name: Enable QEMU binfmt
+        run: |
+          sudo update-binfmts --enable
+
+      - name: Run build inside QEMU
+        run: |
+          chmod +x packages/glibc/build.sh
+
+          sudo cp "$(which qemu-aarch64-static)" /usr/bin/qemu-aarch64-static
+
+          packages/glibc/build.sh
+
+      - name: Upload glibc rootfs
+        uses: actions/upload-artifact@v4
+        with:
+          name: glibc-2.44-rootfs
+          path: glibc-2.44-rootfs.tar.xz
