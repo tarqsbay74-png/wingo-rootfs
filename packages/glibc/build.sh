@@ -13,52 +13,13 @@ GLIBC_BUILDER_DIR=/workspace/packages/glibc
 BUILD_TRIPLET=x86_64-linux-gnu
 HOST_TRIPLET=aarch64-linux-gnu
 
+PATH_PREFIX="${ROOTFS}/usr"
+PATH_LIB="${ROOTFS}/usr/lib"
+PATH_INCLUDE="${ROOTFS}/usr/include"
+PATH_BIN="${ROOTFS}/usr/bin"
+PATH_DYNAMIC_LINKER="${PATH_LIB}/ld-linux-aarch64.so.1"
+
 mkdir -p "$BUILD_DIR"
-
-echo "==> Installing build dependencies"
-
-apt-get update
-
-apt-get install -y \
-    build-essential \
-    gcc \
-    g++ \
-    binutils \
-    gcc-aarch64-linux-gnu \
-    g++-aarch64-linux-gnu \
-    binutils-aarch64-linux-gnu \
-    libc6-dev-arm64-cross \
-    make \
-    file \
-    git \
-    wget \
-    curl \
-    xz-utils \
-    bzip2 \
-    tar \
-    patch \
-    sed \
-    gawk \
-    perl \
-    python3 \
-    jq \
-    gettext \
-    texinfo \
-    bison \
-    flex \
-    libgmp-dev \
-    libmpfr-dev \
-    libmpc-dev \
-    linux-libc-dev
-
-echo "==> Checking AArch64 compiler"
-
-command -v aarch64-linux-gnu-gcc
-command -v aarch64-linux-gnu-g++
-command -v aarch64-linux-gnu-ld
-
-echo "Compiler target:"
-aarch64-linux-gnu-gcc -dumpmachine
 
 echo "==> Cleaning previous build"
 
@@ -71,7 +32,7 @@ rm -f "$GLIBC_ROOTFS_ARCHIVE"
 echo "==> Downloading glibc ${GLIBC_VERSION}"
 
 wget \
-    "https://ftp.gnu.org/gnu/libc/glibc-${GLIBC_VERSION}.tar.xz" \
+    "https://ftp.gnu.org/gnu/glibc/glibc-${GLIBC_VERSION}.tar.xz" \
     -O "$GLIBC_TARBALL"
 
 echo "==> Verifying checksum"
@@ -96,16 +57,14 @@ for patch_file in "$GLIBC_BUILDER_DIR"/*.patch; do
     fi
 done
 
-echo "==> Applying Android modifications"
-
 echo "==> Disabling clone3 function"
 
-rm -f \
+rm \
     sysdeps/unix/sysv/linux/*/clone3.S
 
-echo "==> Disabling editing of ldd script for x86_64"
+echo "==> Disabling editing of ldd script for x86_64 arch"
 
-rm -f \
+rm \
     sysdeps/unix/sysv/linux/x86_64/configure*
 
 echo "==> Installing special syscall files"
@@ -146,80 +105,72 @@ cp \
 
 echo "==> Disabling unsupported syscalls"
 
-for i in aarch64; do
+syscall_dir="sysdeps/unix/sysv/linux/aarch64"
 
-    syscall_dir="sysdeps/unix/sysv/linux/${i}"
+mv \
+    "${syscall_dir}/syscall.S" \
+    "${syscall_dir}/syscallS.S"
 
-    mv \
-        "${syscall_dir}/syscall.S" \
-        "${syscall_dir}/syscallS.S"
+header_disabled_syscall="${syscall_dir}/disabled-syscall.h"
 
-    header_disabled_syscall="${syscall_dir}/disabled-syscall.h"
+{
+    for j in $(jq -r '.[] | .[]' \
+        "$GLIBC_BUILDER_DIR/fakesyscall.json"); do
 
-    : > "$header_disabled_syscall"
+        grep \
+            "#define __NR_${j} " \
+            "${syscall_dir}/arch-syscall.h" \
+            || true
 
-    {
-        for j in $(jq -r '.[] | .[]' \
+        sed -i \
+            "/#define __NR_${j} /d" \
+            "${syscall_dir}/arch-syscall.h"
+
+    done
+} >> "$header_disabled_syscall"
+
+{
+    echo -e "\n#define DISABLED_SYSCALL_WITH_FAKESYSCALL \\"
+
+    local_ifs_backup="$IFS"
+    IFS=$'\n'
+
+    for j in $(jq -r \
+        '. | keys | .[]' \
+        "$GLIBC_BUILDER_DIR/fakesyscall.json"); do
+
+        need_return=false
+
+        for z in $(jq -r \
+            '."'${j}'" | .[]' \
             "$GLIBC_BUILDER_DIR/fakesyscall.json"); do
 
-            grep \
-                "#define __NR_${j} " \
-                "${syscall_dir}/arch-syscall.h" \
-                || true
+            if grep -q \
+                "^#define __NR_${z} " \
+                "$header_disabled_syscall"
+            then
+                echo -e "\tcase __NR_${z}: \\"
+                need_return=true
 
-            sed -i \
-                "/#define __NR_${j} /d" \
-                "${syscall_dir}/arch-syscall.h"
-
-        done
-    } >> "$header_disabled_syscall"
-
-    {
-        echo -e "\n#define DISABLED_SYSCALL_WITH_FAKESYSCALL \\"
-
-        local_ifs_backup="$IFS"
-        IFS=$'\n'
-
-        for j in $(jq -r \
-            '. | keys | .[]' \
-            "$GLIBC_BUILDER_DIR/fakesyscall.json"); do
-
-            need_return=false
-
-            for z in $(jq -r \
-                --arg key "$j" \
-                '.[$key][]' \
-                "$GLIBC_BUILDER_DIR/fakesyscall.json"); do
-
-                if grep -q \
-                    "^#define __NR_${z} " \
-                    "$header_disabled_syscall"
-                then
-                    echo -e "\tcase __NR_${z}: \\"
-                    need_return=true
-
-                elif [[ "$z" =~ ^[0-9]+$ ]]; then
-                    echo -e "\tcase ${z}: \\"
-                    need_return=true
-                fi
-
-            done
-
-            if [ "$need_return" = "true" ]; then
-                echo -e "\t\treturn ${j}; \\"
+            elif [[ ${z} =~ ^[0-9]+$ ]]; then
+                echo -e "\tcase ${z}: \\"
+                need_return=true
             fi
 
         done
 
-        IFS="$local_ifs_backup"
+        [ "${need_return}" = "true" ] && \
+            echo -e "\t\treturn ${j}; \\"
 
-    } >> "$header_disabled_syscall"
+    done
 
-    sed -i \
-        '$ s| \\||' \
-        "$header_disabled_syscall"
+    IFS="$local_ifs_backup"
 
-done
+} >> "$header_disabled_syscall"
+
+sed -i \
+    '$ s| \\||' \
+    "$header_disabled_syscall"
 
 echo "==> Replacing Android-incompatible hard paths"
 
@@ -229,15 +180,17 @@ for i in \
     /dev/stdout:/proc/self/fd/1
 do
 
-    old_path="${i%%:*}"
-    new_path="${i#*:}"
-
     while IFS= read -r j; do
         sed -i \
-            "s|${old_path}|${new_path}|g" \
+            "s|${i%%:*}|${i//*:}|g" \
             "$j"
     done < <(
-        grep -s -r -l "$old_path" .
+        grep \
+            -s \
+            -r \
+            -l \
+            "${i%%:*}" \
+            "$GLIBC_SRC"
     )
 
 done
@@ -250,10 +203,10 @@ mkdir -p "$GLIBC_BUILD"
 
 cd "$GLIBC_BUILD"
 
-echo "slibdir=${ROOTFS}/usr/lib" > configparms
-echo "rtlddir=${ROOTFS}/usr/lib" >> configparms
-echo "sbindir=${ROOTFS}/usr/bin" >> configparms
-echo "rootsbindir=${ROOTFS}/usr/bin" >> configparms
+echo "slibdir=${PATH_LIB}" > configparms
+echo "rtlddir=${PATH_LIB}" >> configparms
+echo "sbindir=${PATH_BIN}" >> configparms
+echo "rootsbindir=${PATH_BIN}" >> configparms
 
 echo "==> Configuring glibc for AArch64"
 
@@ -269,78 +222,49 @@ export OBJDUMP=aarch64-linux-gnu-objdump
 export READELF=aarch64-linux-gnu-readelf
 export STRIP=aarch64-linux-gnu-strip
 
-export CFLAGS="-O2 -pipe -fno-plt -fexceptions \
--Wp,-D_FORTIFY_SOURCE=2 \
--Wformat \
--Werror=format-security \
--fstack-clash-protection \
--fmarch=armv8-a \
--fstack-protector-strong"
-
-export CXXFLAGS="$CFLAGS -Wp,-D_GLIBCXX_ASSERTIONS"
-
-echo "CC=$CC"
-echo "CFLAGS=$CFLAGS"
-
-echo "==> Testing cross compiler"
-
-cat > "$GLIBC_BUILD/test.c" <<'EOF'
-int main(void)
-{
-    return 0;
-}
-EOF
-
-"$CC" \
-    "$GLIBC_BUILD/test.c" \
-    -o "$GLIBC_BUILD/test"
-
-file "$GLIBC_BUILD/test"
-
-rm -f \
-    "$GLIBC_BUILD/test.c" \
-    "$GLIBC_BUILD/test"
-
-echo "==> Preparing configure CFLAGS"
+CFLAGS="${CFLAGS:-}"
+CXXFLAGS="${CXXFLAGS:-}"
 
 CFLAGS="${CFLAGS/-Wp,-D_FORTIFY_SOURCE=2 / }"
 CFLAGS="${CFLAGS/-Werror / }"
 
 export CFLAGS
+export CXXFLAGS
 
-echo "Configure CFLAGS:"
-echo "$CFLAGS"
+echo "CC=$CC"
+echo "CFLAGS=$CFLAGS"
 
 echo "==> Running glibc configure"
 
-"$GLIBC_SRC/configure" \
-    --prefix="${ROOTFS}/usr" \
-    --libdir="${ROOTFS}/usr/lib" \
-    --libexecdir="${ROOTFS}/usr/lib" \
-    --includedir="${ROOTFS}/usr/include" \
-    --host="${HOST_TRIPLET}" \
-    --build="${BUILD_TRIPLET}" \
-    --target="${HOST_TRIPLET}" \
-    --with-bugurl=https://github.com/termux-pacman/glibc-packages/issues \
-    --with-pkgversion="GNU libc for Android" \
-    --enable-bind-now \
-    --enable-fortify-source \
-    --disable-multi-arch \
-    --enable-memory-tagging \
-    --enable-stack-protector=strong \
-    --enable-systemtap \
-    --disable-nscd \
-    --disable-profile \
-    --disable-werror \
+CONFIGURE_FLAGS=(
+    --prefix="$PATH_PREFIX"
+    --libdir="$PATH_LIB"
+    --libexecdir="$PATH_LIB"
+    --includedir="$PATH_INCLUDE"
+    --host="$HOST_TRIPLET"
+    --build="$BUILD_TRIPLET"
+    --target="$HOST_TRIPLET"
+    --with-bugurl=https://github.com/termux-pacman/glibc-packages/issues
+    --with-pkgversion="GNU libc for Android"
+    --enable-bind-now
+    --enable-fortify-source
+    --disable-multi-arch
+    --enable-stack-protector=strong
+    --enable-systemtap
+    --disable-nscd
+    --disable-profile
+    --disable-werror
     --disable-default-pie
+    --enable-memory-tagging
+    --enable-fortify-source
+)
+
+"$GLIBC_SRC/configure" \
+    "${CONFIGURE_FLAGS[@]}"
 
 echo "==> Building glibc"
 
 make -O
-
-echo "==> Creating rootfs"
-
-mkdir -p "$ROOTFS"
 
 echo "==> Installing glibc"
 
@@ -357,7 +281,7 @@ rm -f \
 echo "==> Installing tmpfiles configuration"
 
 install -dm755 \
-    "$ROOTFS/usr/lib/tmpfiles.d"
+    "$PATH_LIB/tmpfiles.d"
 
 install -m644 \
     "$GLIBC_SRC/nscd/nscd.conf" \
@@ -365,9 +289,7 @@ install -m644 \
 
 install -m644 \
     "$GLIBC_SRC/nscd/nscd.tmpfiles" \
-    "$ROOTFS/usr/lib/tmpfiles.d/nscd.conf"
-
-echo "==> Installing gai.conf"
+    "$PATH_LIB/tmpfiles.d/nscd.conf"
 
 install -m644 \
     "$GLIBC_SRC/posix/gai.conf" \
@@ -377,7 +299,7 @@ echo "==> Installing locale-gen"
 
 install -m755 \
     "$GLIBC_BUILDER_DIR/locale-gen" \
-    "$ROOTFS/usr/bin/locale-gen"
+    "$PATH_BIN"
 
 echo "==> Installing locale.gen"
 
@@ -403,7 +325,7 @@ sed \
     > "$ROOTFS/usr/share/i18n/SUPPORTED"
 
 install -dm755 \
-    "$ROOTFS/usr/lib/locale"
+    "$PATH_LIB/locale"
 
 echo "==> Installing locale files"
 
@@ -411,7 +333,6 @@ make \
     -C "$GLIBC_SRC/localedata" \
     objdir="$GLIBC_BUILD" \
     SUPPORTED-LOCALES="C.UTF-8/UTF-8 en_US.UTF-8/UTF-8" \
-    DESTDIR="$ROOTFS" \
     install-locale-files
 
 sed -i \
@@ -422,29 +343,28 @@ echo "==> Installing SystemTap headers"
 
 install -Dm644 \
     "$GLIBC_BUILDER_DIR/sdt.h" \
-    "$ROOTFS/usr/include/sys/sdt.h"
+    "$PATH_INCLUDE/sys/sdt.h"
 
 install -Dm644 \
     "$GLIBC_BUILDER_DIR/sdt-config.h" \
-    "$ROOTFS/usr/include/sys/sdt-config.h"
+    "$PATH_INCLUDE/sys/sdt-config.h"
 
 echo "==> Creating dynamic linker symlinks"
 
-PATH_DYNAMIC_LINKER="$ROOTFS/usr/lib/ld-linux-aarch64.so.1"
+ln -sfr \
+    "$PATH_DYNAMIC_LINKER" \
+    "$PATH_BIN/ld.so"
 
 ln -sfr \
     "$PATH_DYNAMIC_LINKER" \
-    "$ROOTFS/usr/bin/ld.so"
-
-ln -sfr \
-    "$PATH_DYNAMIC_LINKER" \
-    "$ROOTFS/usr/lib/ld.so"
+    "$PATH_LIB/ld.so"
 
 echo "==> Building libsyscall_without_fsc.so"
 
-"$CC" \
+CC="$CC" \
+    "$CC" \
     "$GLIBC_BUILDER_DIR/syscall.c" \
-    -o "$ROOTFS/usr/lib/libsyscall_without_fsc.so" \
+    -o "$PATH_LIB/libsyscall_without_fsc.so" \
     -shared \
     -DWITHOUT_FAKESYSCALL
 
@@ -453,26 +373,26 @@ echo "DONE"
 echo "==> Verifying generated binaries"
 
 file \
-    "$ROOTFS/usr/lib/libc.so.6"
+    "$PATH_LIB/libc.so.6"
 
 file \
-    "$ROOTFS/usr/lib/ld-linux-aarch64.so.1"
+    "$PATH_DYNAMIC_LINKER"
 
 file \
-    "$ROOTFS/usr/lib/libsyscall_without_fsc.so"
+    "$PATH_LIB/libsyscall_without_fsc.so"
 
 echo "==> Checking ELF architecture"
 
 readelf -h \
-    "$ROOTFS/usr/lib/libc.so.6" \
+    "$PATH_LIB/libc.so.6" \
     | grep -E 'Class|Machine'
 
 readelf -h \
-    "$ROOTFS/usr/lib/ld-linux-aarch64.so.1" \
+    "$PATH_DYNAMIC_LINKER" \
     | grep -E 'Class|Machine'
 
 readelf -h \
-    "$ROOTFS/usr/lib/libsyscall_without_fsc.so" \
+    "$PATH_LIB/libsyscall_without_fsc.so" \
     | grep -E 'Class|Machine'
 
 echo "==> Creating rootfs archive"
@@ -496,4 +416,4 @@ echo "$GLIBC_ROOTFS_ARCHIVE"
 echo
 echo "Architecture:"
 file \
-    "$ROOTFS/usr/lib/libc.so.6"
+    "$PATH_LIB/libc.so.6"
