@@ -1,225 +1,27 @@
-name: Wingo Package Builder
+name: Build glibc
 
 on:
   workflow_dispatch:
-    inputs:
-      package:
-        description: "Package name inside packages/"
-        required: true
-        type: string
-        default: "glibc"
-
-run-name: "Build ${{ inputs.package }}"
-
-permissions:
-  contents: read
 
 jobs:
   build:
-    name: "Build ${{ inputs.package }}"
     runs-on: ubuntu-24.04
-
-    env:
-      WINGO_PACKAGE: ${{ inputs.package }}
-      WINGO_ROOT: ${{ github.workspace }}
-      WINGO_PACKAGES_DIR: ${{ github.workspace }}/packages
-      WINGO_BUILD_DIR: ${{ github.workspace }}/build
-      WINGO_STAGING_DIR: ${{ github.workspace }}/staging
-      WINGO_OUTPUT_DIR: ${{ github.workspace }}/output
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
-      - name: Validate package
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ ! "$WINGO_PACKAGE" =~ ^[A-Za-z0-9._+-]+$ ]]; then
-              echo "ERROR: Invalid package name: $WINGO_PACKAGE"
-              exit 1
-          fi
-
-          PACKAGE_DIR="$WINGO_PACKAGES_DIR/$WINGO_PACKAGE"
-
-          if [[ ! -d "$PACKAGE_DIR" ]]; then
-              echo "ERROR: Package directory not found:"
-              echo "$PACKAGE_DIR"
-              exit 1
-          fi
-
-          if [[ ! -f "$PACKAGE_DIR/build.sh" ]]; then
-              echo "ERROR: build.sh not found:"
-              echo "$PACKAGE_DIR/build.sh"
-              exit 1
-          fi
-
-          echo "Package: $WINGO_PACKAGE"
-          echo "Package directory: $PACKAGE_DIR"
-
-      - name: Install build environment
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sudo apt-get update
-
-          sudo apt-get install -y \
-              autoconf \
-              automake \
-              bison \
-              build-essential \
-              binutils-aarch64-linux-gnu \
-              bzip2 \
-              ca-certificates \
-              flex \
-              gawk \
-              gcc-aarch64-linux-gnu \
-              g++-aarch64-linux-gnu \
-              gettext \
-              git \
-              libtool \
-              make \
-              patch \
-              perl \
-              python3 \
-              rsync \
-              texinfo \
-              wget \
-              xz-utils \
-              zstd
-
-          sudo apt-get clean
-
-      - name: Prepare directories
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf \
-              "$WINGO_BUILD_DIR" \
-              "$WINGO_STAGING_DIR" \
-              "$WINGO_OUTPUT_DIR"
-
-          mkdir -p \
-              "$WINGO_BUILD_DIR" \
-              "$WINGO_STAGING_DIR" \
-              "$WINGO_OUTPUT_DIR"
-
-      - name: Prepare package source
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PACKAGE_DIR="$WINGO_PACKAGES_DIR/$WINGO_PACKAGE"
-
-          chmod +x "$PACKAGE_DIR/build.sh"
-
-          export WINGO_PHASE="prepare"
-          export WINGO_PACKAGE_DIR="$PACKAGE_DIR"
-
-          "$PACKAGE_DIR/build.sh"
-
-      - name: Read source directory
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SOURCE_FILE="$WINGO_BUILD_DIR/source-dir"
-
-          if [[ ! -f "$SOURCE_FILE" ]]; then
-              echo "ERROR: build.sh did not create:"
-              echo "$SOURCE_FILE"
-              exit 1
-          fi
-
-          SRC_DIR="$(cat "$SOURCE_FILE")"
-
-          if [[ ! -d "$SRC_DIR" ]]; then
-              echo "ERROR: Source directory does not exist:"
-              echo "$SRC_DIR"
-              exit 1
-          fi
-
-          echo "WINGO_SRC_DIR=$SRC_DIR" >> "$GITHUB_ENV"
-
-          echo "Source:"
-          echo "$SRC_DIR"
-
-      - name: Apply all patches
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PACKAGE_DIR="$WINGO_PACKAGES_DIR/$WINGO_PACKAGE"
-
-          shopt -s nullglob
-
-          PATCHES=(
-              "$PACKAGE_DIR"/*.patch
-          )
-
-          shopt -u nullglob
-
-          if [[ ${#PATCHES[@]} -eq 0 ]]; then
-              echo "No .patch files found."
-              exit 0
-          fi
-
-          for patch_file in "${PATCHES[@]}"; do
-              echo
-              echo "============================================================"
-              echo "Applying patch: $(basename "$patch_file")"
-              echo "============================================================"
-
-              patch \
-                  --batch \
-                  --forward \
-                  -d "$WINGO_SRC_DIR" \
-                  -p1 \
-                  < "$patch_file"
-
-              echo "Successfully applied:"
-              echo "$(basename "$patch_file")"
-          done
-
-      - name: Build package
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          PACKAGE_DIR="$WINGO_PACKAGES_DIR/$WINGO_PACKAGE"
-
-          export WINGO_PHASE="build"
-          export WINGO_PACKAGE_DIR="$PACKAGE_DIR"
-          export WINGO_SRC_DIR="$WINGO_SRC_DIR"
-
-          "$PACKAGE_DIR/build.sh"
-
-      - name: Show output
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if ! find "$WINGO_OUTPUT_DIR" -type f -print -quit | grep -q .; then
-              echo "ERROR: No package was generated."
-              exit 1
-          fi
-
-          echo
-          echo "============================================================"
-          echo "Generated packages"
-          echo "============================================================"
-
-          find "$WINGO_OUTPUT_DIR" \
-              -type f \
-              -printf '%p\n'
-
-      - name: Upload package
-        uses: actions/upload-artifact@v6
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v3
         with:
-          name: wingo-${{ inputs.package }}
-          path: output/
-          if-no-files-found: error
-          compression-level: 0
+          platforms: arm64
+
+      - name: Build glibc
+        run: |
+          chmod +x glibc/build.sh
+          docker run --rm \
+            --platform linux/arm64 \
+            -v "$PWD:/packages" \
+            -w /packages \
+            debian:bookworm \
+            bash /packages/glibc/build.sh
