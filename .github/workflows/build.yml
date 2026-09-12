@@ -13,11 +13,8 @@ jobs:
 
       - name: Run build script as root
         run: |
-          sudo -i bash -c '
-            cd "$GITHUB_WORKSPACE"
-            chmod +x packages/glibc/build.sh
-            packages/glibc/build.sh
-          '
+          chmod +x packages/glibc/build.sh
+          sudo bash packages/glibc/build.sh
 
       - name: Upload glibc rootfs
         uses: actions/upload-artifact@v4
