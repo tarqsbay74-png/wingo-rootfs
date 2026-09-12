@@ -11,10 +11,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run build script
+      - name: Run build script as root
         run: |
-          chmod +x packages/glibc/build.sh
-          packages/glibc/build.sh
+          sudo -i bash -c '
+            cd "$GITHUB_WORKSPACE"
+            chmod +x packages/glibc/build.sh
+            packages/glibc/build.sh
+          '
 
       - name: Upload glibc rootfs
         uses: actions/upload-artifact@v4
