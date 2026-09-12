@@ -285,8 +285,6 @@ EOF
 
 file "$GLIBC_BUILD/test"
 
-"$GLIBC_BUILD/test"
-
 rm -f \
     "$GLIBC_BUILD/test.c" \
     "$GLIBC_BUILD/test"
