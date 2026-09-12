@@ -2,429 +2,225 @@
 
 set -euo pipefail
 
-###############################################################################
-# Wingo Glibc
-###############################################################################
-
-PACKAGE_NAME="glibc"
-PACKAGE_VERSION="2.44"
-
-SOURCE_URL="https://ftp.gnu.org/gnu/libc/glibc-${PACKAGE_VERSION}.tar.xz"
-SOURCE_SHA256="37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667"
-
-TARGET="aarch64-linux-gnu"
-BUILD="x86_64-linux-gnu"
-
-###############################################################################
-# Paths
-###############################################################################
-
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-
-ROOT_DIR="${WINGO_ROOT:?WINGO_ROOT is required}"
-BUILD_ROOT="${WINGO_BUILD_DIR:-$ROOT_DIR/build}"
-STAGING_ROOT="${WINGO_STAGING_DIR:-$ROOT_DIR/staging}"
-OUTPUT_ROOT="${WINGO_OUTPUT_DIR:-$ROOT_DIR/output}"
-
-SOURCE_ARCHIVE="$BUILD_ROOT/glibc-${PACKAGE_VERSION}.tar.xz"
-SOURCE_DIR="$BUILD_ROOT/glibc-${PACKAGE_VERSION}"
-BUILD_DIR="$BUILD_ROOT/glibc-build"
-STAGING_DIR="$STAGING_ROOT/$PACKAGE_NAME"
-
-###############################################################################
-# Helpers
-###############################################################################
-
-log() {
-	echo
-	echo "==> $*"
-}
-
-die() {
-	echo "ERROR: $*" >&2
-	exit 1
-}
-
-need() {
-	command -v "$1" >/dev/null 2>&1 ||
-		die "Missing command: $1"
-}
-
-###############################################################################
-# Download
-###############################################################################
-
-download_source() {
-	log "Downloading Glibc ${PACKAGE_VERSION}"
-
-	mkdir -p "$BUILD_ROOT"
-
-	if [[ ! -f "$SOURCE_ARCHIVE" ]]; then
-		curl \
-			--fail \
-			--location \
-			--retry 5 \
-			--retry-delay 3 \
-			--output "$SOURCE_ARCHIVE" \
-			"$SOURCE_URL"
-	fi
-
-	echo "${SOURCE_SHA256}  ${SOURCE_ARCHIVE}" |
-		sha256sum --check -
-}
-
-###############################################################################
-# Extract
-###############################################################################
-
-extract_source() {
-	log "Extracting source"
-
-	rm -rf "$SOURCE_DIR"
-
-	tar \
-		-xf "$SOURCE_ARCHIVE" \
-		-C "$BUILD_ROOT"
-
-	[[ -d "$SOURCE_DIR" ]] ||
-		die "Source directory not found: $SOURCE_DIR"
-}
-
-###############################################################################
-# Wingo source files
-###############################################################################
-
-install_wingo_files() {
-	log "Installing Wingo source files"
-
-	mkdir -p "$SOURCE_DIR/sysdeps/unix/sysv/linux"
-
-	for file in \
-		shm_at.c \
-		shmctl.c \
-		shmdt.c \
-		shmget.c \
-		mprotect.c \
-		syscall.c \
-		fake_epoll_pwait2.c \
-		setfsuid.c \
-		setfsgid.c
-	do
-		[[ -f "$SCRIPT_DIR/$file" ]] || continue
-
-		cp \
-			"$SCRIPT_DIR/$file" \
-			"$SOURCE_DIR/sysdeps/unix/sysv/linux/$file"
-	done
-
-	for file in "$SCRIPT_DIR"/fakesyscall*.h; do
-		[[ -f "$file" ]] || continue
-
-		cp \
-			"$file" \
-			"$SOURCE_DIR/sysdeps/unix/sysv/linux/$(basename "$file")"
-	done
-
-	if [[ -f "$SCRIPT_DIR/android_passwd_group.c" ]]; then
-		mkdir -p "$SOURCE_DIR/nss"
-
-		cp \
-			"$SCRIPT_DIR/android_passwd_group.c" \
-			"$SOURCE_DIR/nss/"
-	fi
-
-	if [[ -f "$SCRIPT_DIR/android_passwd_group.h" ]]; then
-		mkdir -p "$SOURCE_DIR/nss"
-
-		cp \
-			"$SCRIPT_DIR/android_passwd_group.h" \
-			"$SOURCE_DIR/nss/"
-	fi
-
-	if [[ -f "$SCRIPT_DIR/android_system_user_ids.h" ]]; then
-		mkdir -p "$SOURCE_DIR/nss"
-
-		cp \
-			"$SCRIPT_DIR/android_system_user_ids.h" \
-			"$SOURCE_DIR/nss/"
-	fi
-
-	if [[ -f "$SCRIPT_DIR/syslog.c" ]]; then
-		mkdir -p "$SOURCE_DIR/misc"
-
-		cp \
-			"$SCRIPT_DIR/syslog.c" \
-			"$SOURCE_DIR/misc/"
-	fi
-
-	for file in "$SCRIPT_DIR"/shmem-android.*; do
-		[[ -f "$file" ]] || continue
-
-		mkdir -p "$SOURCE_DIR/sysvipc"
-
-		cp \
-			"$file" \
-			"$SOURCE_DIR/sysvipc/$(basename "$file")"
-	done
-}
-
-###############################################################################
-# Source cleanup
-###############################################################################
-
-prepare_source() {
-	log "Preparing source"
-
-	find \
-		"$SOURCE_DIR/sysdeps/unix/sysv/linux" \
-		-type f \
-		-name 'clone3.S' \
-		-delete
-
-	if [[ -d "$SOURCE_DIR/sysdeps/unix/sysv/linux/x86_64" ]]; then
-		find \
-			"$SOURCE_DIR/sysdeps/unix/sysv/linux/x86_64" \
-			-maxdepth 1 \
-			-type f \
-			-name 'configure*' \
-			-delete
-	fi
-
-	while IFS= read -r -d '' file; do
-		sed \
-			-i \
-			-e 's|/dev/stderr|/proc/self/fd/2|g' \
-			-e 's|/dev/stdin|/proc/self/fd/0|g' \
-			-e 's|/dev/stdout|/proc/self/fd/1|g' \
-			"$file"
-	done < <(
-		grep \
-			-rlZ \
-			-e '/dev/stderr' \
-			-e '/dev/stdin' \
-			-e '/dev/stdout' \
-			"$SOURCE_DIR" 2>/dev/null || true
-	)
-}
-
-###############################################################################
-# Fake syscalls
-###############################################################################
-
-configure_fake_syscalls() {
-	local json="$SCRIPT_DIR/fakesyscall.json"
-
-	[[ -f "$json" ]] || return 0
-
-	log "Configuring fake syscalls"
-
-	for arch in aarch64 arm i386 x86_64; do
-		local dir="$SOURCE_DIR/sysdeps/unix/sysv/linux/$arch"
-
-		[[ -d "$dir" ]] || continue
-
-		if [[ -f "$dir/syscall.S" ]]; then
-			mv \
-				"$dir/syscall.S" \
-				"$dir/syscallS.S"
-		fi
-
-		[[ -f "$dir/arch-syscall.h" ]] || continue
-
-		local disabled="$dir/disabled-syscall.h"
-
-		: > "$disabled"
-
-		while IFS= read -r syscall; do
-			[[ -n "$syscall" ]] || continue
-
-			sed \
-				-i \
-				"/#define __NR_${syscall} /d" \
-				"$dir/arch-syscall.h"
-
-		done < <(
-			jq -r '.[] | .[]' "$json"
-		)
-
-		echo '#define DISABLED_SYSCALL_WITH_FAKESYSCALL \' >> "$disabled"
-
-		while IFS= read -r function; do
-			while IFS= read -r syscall; do
-				if [[ "$syscall" =~ ^[0-9]+$ ]]; then
-					echo -e "\tcase ${syscall}: \\" >> "$disabled"
-				else
-					echo -e "\tcase __NR_${syscall}: \\" >> "$disabled"
-				fi
-
-				echo -e "\t\treturn ${function}; \\" >> "$disabled"
-			done < <(
-				jq -r --arg name "$function" '.[$name][]' "$json"
-			)
-		done < <(
-			jq -r 'keys[]' "$json"
-		)
-
-		sed -i '$ s/ \\$//' "$disabled"
-	done
-}
-
-###############################################################################
-# Configure
-###############################################################################
-
-configure() {
-	log "Configuring Glibc"
-
-	need aarch64-linux-gnu-gcc
-	need aarch64-linux-gnu-g++
-	need aarch64-linux-gnu-ar
-	need aarch64-linux-gnu-as
-	need aarch64-linux-gnu-ld
-	need aarch64-linux-gnu-nm
-	need aarch64-linux-gnu-ranlib
-	need aarch64-linux-gnu-readelf
-	need aarch64-linux-gnu-strip
-	need make
-
-	local kernel_headers="${WINGO_KERNEL_HEADERS:-/usr/aarch64-linux-gnu/include}"
-
-	[[ -d "$kernel_headers" ]] ||
-		die "Kernel headers not found: $kernel_headers"
-
-	rm -rf "$BUILD_DIR"
-	mkdir -p "$BUILD_DIR"
-
-	cd "$BUILD_DIR"
-
-	cat > configparms <<EOF
-slibdir=/lib
-rtlddir=/lib
-sbindir=/bin
-rootsbindir=/bin
-EOF
-
-	export CC=aarch64-linux-gnu-gcc
-	export CXX=aarch64-linux-gnu-g++
-	export AR=aarch64-linux-gnu-ar
-	export AS=aarch64-linux-gnu-as
-	export LD=aarch64-linux-gnu-ld
-	export NM=aarch64-linux-gnu-nm
-	export RANLIB=aarch64-linux-gnu-ranlib
-	export READELF=aarch64-linux-gnu-readelf
-	export STRIP=aarch64-linux-gnu-strip
-	export BUILD_CC=gcc
-
-	"$SOURCE_DIR/configure" \
-		--prefix=/ \
-		--libdir=/lib \
-		--libexecdir=/lib \
-		--includedir=/include \
-		--build="$BUILD" \
-		--host="$TARGET" \
-		--with-headers="$kernel_headers" \
-		--with-pkgversion="GNU libc for Wingo" \
-		--with-bugurl="https://github.com/tarqsbay74-png/glibc-packages/issues" \
-		--enable-bind-now \
-		--enable-fortify-source \
-		--disable-multi-arch \
-		--enable-stack-protector=strong \
-		--disable-nscd \
-		--disable-profile \
-		--disable-werror \
-		--disable-default-pie
-}
-
-###############################################################################
-# Build
-###############################################################################
-
-build() {
-	log "Building Glibc"
-
-	cd "$BUILD_DIR"
-
-	make \
-		-O \
-		-j"$(nproc)"
-}
-
-###############################################################################
-# Install
-###############################################################################
-
-install() {
-	log "Installing Glibc"
-
-	rm -rf "$STAGING_DIR"
-	mkdir -p "$STAGING_DIR"
-
-	cd "$BUILD_DIR"
-
-	make \
-		install \
-		DESTDIR="$STAGING_DIR"
-
-	rm -f "$STAGING_DIR/etc/ld.so.cache"
-
-	rm -f \
-		"$STAGING_DIR/bin/tzselect" \
-		"$STAGING_DIR/bin/zdump" \
-		"$STAGING_DIR/bin/zic"
-
-	rm -rf "$STAGING_DIR/include/gnu"
-}
-
-###############################################################################
-# Package
-###############################################################################
-
-package() {
-	log "Creating package"
-
-	need tar
-	need zstd
-
-	mkdir -p "$OUTPUT_ROOT"
-
-	local output="$OUTPUT_ROOT/${PACKAGE_NAME}-${PACKAGE_VERSION}-${TARGET}.tar.zst"
-
-	rm -f "$output"
-
-	tar \
-		-C "$STAGING_DIR" \
-		-cf - \
-		. |
-		zstd \
-			-T0 \
-			-o "$output"
-
-	echo
-	echo "Package created:"
-	echo "$output"
-}
-
-###############################################################################
-# Main
-###############################################################################
-
-main() {
-	need curl
-	need sha256sum
-	need tar
-	need jq
-
-	download_source
-	extract_source
-	install_wingo_files
-	prepare_source
-	configure_fake_syscalls
-	configure
-	build
-	install
-	package
-
-	log "Wingo Glibc build completed"
-}
-
-main "$@"
+apt-get update
+
+apt-get install -y \
+    build-essential \
+    bison \
+    flex \
+    gawk \
+    gettext \
+    texinfo \
+    python3 \
+    perl \
+    rsync \
+    wget \
+    xz-utils \
+    file \
+    patch \
+    jq \
+    binutils
+
+mkdir -p /packages/glibc/source
+mkdir -p /packages/glibc/build
+mkdir -p /packages/glibc/rootfs
+
+cd /packages/glibc/source
+
+wget -O glibc-2.44.tar.xz \
+    https://ftp.gnu.org/gnu/glibc/glibc-2.44.tar.xz
+
+echo "37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667  glibc-2.44.tar.xz" \
+    | sha256sum -c -
+
+tar -xf glibc-2.44.tar.xz
+
+cd /packages/glibc/source/glibc-2.44
+
+# Apply patches immediately after extracting the source.
+for patch_file in /packages/glibc/*.patch; do
+    [ -f "$patch_file" ] || continue
+    patch -p1 < "$patch_file"
+done
+
+# Disable clone3.
+rm -f sysdeps/unix/sysv/linux/*/clone3.S
+
+# Disable editing of ldd for x86_64.
+rm -f sysdeps/unix/sysv/linux/x86_64/configure*
+
+# Install special syscall implementations.
+cp /packages/glibc/{shmat.c,shmctl.c,shmdt.c,shmget.c,mprotect.c,syscall.c,fakesyscall*.h,fake_epoll_pwait2.c,setfs{u,g}id.c} \
+    sysdeps/unix/sysv/linux/
+
+# Install Android passwd/group support.
+cp /packages/glibc/{android_passwd_group.*,android_system_user_ids.h} \
+    nss/
+
+bash /packages/glibc/gen-android-ids.sh \
+    /packages \
+    nss/android_ids.h \
+    /packages/glibc/android_system_user_ids.h
+
+# Install Android-compatible syslog implementation.
+cp /packages/glibc/syslog.c \
+    misc/
+
+# Install Android System V shared-memory implementation.
+cp /packages/glibc/shmem-android.* \
+    sysvipc/
+
+# Rename syscall.S so the normal implementation is disabled.
+for arch in aarch64 arm i386 x86_64; do
+    syscall_file="sysdeps/unix/sysv/linux/$arch/syscall.S"
+
+    if [ -f "$syscall_file" ]; then
+        mv "$syscall_file" \
+            "sysdeps/unix/sysv/linux/$arch/syscallS.S"
+    fi
+done
+
+# Generate disabled syscall headers.
+for arch in aarch64 arm i386 x86_64; do
+    disabled_header="sysdeps/unix/sysv/linux/$arch/disabled-syscall.h"
+
+    : > "$disabled_header"
+
+    while read -r syscall; do
+        grep "#define __NR_${syscall} " \
+            "sysdeps/unix/sysv/linux/$arch/arch-syscall.h" \
+            || true
+
+        sed -i \
+            "/#define __NR_${syscall} /d" \
+            "sysdeps/unix/sysv/linux/$arch/arch-syscall.h"
+    done < <(
+        jq -r '.[] | .[]' \
+            /packages/glibc/fakesyscall.json
+    )
+
+    {
+        echo
+        echo '#define DISABLED_SYSCALL_WITH_FAKESYSCALL \'
+
+        while read -r function; do
+            need_return=false
+
+            while read -r syscall; do
+                if grep -q \
+                    "^#define __NR_${syscall} " \
+                    "$disabled_header"
+                then
+                    echo -e "\tcase __NR_${syscall}: \\"
+                    need_return=true
+
+                elif [[ "$syscall" =~ ^[0-9]+$ ]]; then
+                    echo -e "\tcase ${syscall}: \\"
+                    need_return=true
+                fi
+
+            done < <(
+                jq -r \
+                    --arg function "$function" \
+                    '.[$function][]' \
+                    /packages/glibc/fakesyscall.json
+            )
+
+            if [ "$need_return" = "true" ]; then
+                echo -e "\t\treturn ${function}; \\"
+            fi
+
+        done < <(
+            jq -r '. | keys | .[]' \
+                /packages/glibc/fakesyscall.json
+        )
+    } >> "$disabled_header"
+
+    sed -i '$ s| \\||' "$disabled_header"
+done
+
+# Replace hard-coded device paths.
+for path in \
+    /dev/stderr:/proc/self/fd/2 \
+    /dev/stdin:/proc/self/fd/0 \
+    /dev/stdout:/proc/self/fd/1
+do
+    old="${path%%:*}"
+    new="${path#*:}"
+
+    while read -r file; do
+        sed -i "s|${old}|${new}|g" "$file"
+    done < <(
+        grep -s -r -l "$old" . || true
+    )
+done
+
+# Prepare clean build directory.
+rm -rf /packages/glibc/build/*
+cd /packages/glibc/build
+
+# Configure glibc for the native QEMU environment.
+../source/glibc-2.44/configure \
+    --prefix=/usr \
+    --libdir=/usr/lib \
+    --libexecdir=/usr/lib \
+    --includedir=/usr/include \
+    --host=aarch64-linux-gnu \
+    --build=aarch64-linux-gnu \
+    --target=aarch64-linux-gnu \
+    --with-bugurl=https://github.com/termux-pacman/glibc-packages/issues \
+    --with-pkgversion="GNU libc for Android" \
+    --enable-bind-now \
+    --enable-fortify-source \
+    --disable-multi-arch \
+    --enable-stack-protector=strong \
+    --enable-systemtap \
+    --disable-nscd \
+    --disable-profile \
+    --disable-werror \
+    --disable-default-pie
+
+# Build.
+make -O"$(nproc)"
+
+# Install into the custom rootfs.
+make DESTDIR=/packages/glibc/rootfs install
+
+# Remove files that should not be included.
+rm -f /packages/glibc/rootfs/usr/etc/ld.so.cache
+rm -f /packages/glibc/rootfs/usr/bin/tzselect
+rm -f /packages/glibc/rootfs/usr/bin/zdump
+rm -f /packages/glibc/rootfs/usr/bin/zic
+
+# Install tmpfiles configuration.
+install -dm755 \
+    /packages/glibc/rootfs/usr/lib/tmpfiles.d
+
+install -m644 \
+    ../source/glibc-2.44/nscd/nscd.conf \
+    /packages/glibc/rootfs/usr/etc/nscd.conf
+
+install -m644 \
+    ../source/glibc-2.44/nscd/nscd.tmpfiles \
+    /packages/glibc/rootfs/usr/lib/tmpfiles.d/nscd.conf
+
+install -m644 \
+    ../source/glibc-2.44/posix/gai.conf \
+    /packages/glibc/rootfs/usr/etc/gai.conf
+
+echo
+echo "========================================"
+echo "glibc 2.44 build completed successfully"
+echo "========================================"
+echo
+echo "Installed rootfs:"
+echo "/packages/glibc/rootfs"
+echo
+echo "glibc:"
+ls -l /packages/glibc/rootfs/usr/lib/libc.so* 2>/dev/null || true
+echo
+echo "Dynamic linker:"
+find /packages/glibc/rootfs/usr/lib \
+    -maxdepth 1 \
+    -name 'ld-linux*' \
+    -print
