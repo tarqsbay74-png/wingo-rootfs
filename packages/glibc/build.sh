@@ -8,11 +8,13 @@ PKG_SHA256="37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667"
 
 SRC="${GITHUB_WORKSPACE}/packages/glibc/glibc-${PKG_VERSION}"
 BUILD="${GITHUB_WORKSPACE}/packages/glibc/build"
-ROOTFS="${GITHUB_WORKSPACE}/packages/glibc/rootfs"
 
-PREFIX="/usr"
-LIBDIR="/usr/lib"
+PREFIX="/data/data/com.wingo/files/rootfs/usr"
+LIBDIR="${PREFIX}/lib"
+
 HOST="aarch64-linux-gnu"
+
+ROOTFS="${PREFIX}"
 
 GLIBC_TARBALL="${GITHUB_WORKSPACE}/packages/glibc/glibc-${PKG_VERSION}.tar.xz"
 PACKAGE_DIR="${GITHUB_WORKSPACE}/packages/glibc"
@@ -185,9 +187,6 @@ export CFLAGS
     --with-bugurl="https://www.gnu.org/software/libc/" \
     --with-pkgversion="GNU libc AArch64" \
     --enable-shared \
-    --enable-bind-now \
-    --enable-stack-protector=strong \
-    --enable-fortify-source \
     --disable-multi-arch \
     --disable-systemtap \
     --disable-build-nscd \
@@ -221,15 +220,17 @@ make \
     elf/ldso_install \
     install-lib
 
+mkdir -p "$STAGE/usr/lib"
+
 cp \
     "$BUILD/libc.so" \
     "$STAGE/usr/lib/libc.so.6"
 
-mkdir -p "$ROOTFS/usr/lib"
+mkdir -p "$ROOTFS/lib"
 
 cp -r \
     "$STAGE/usr/lib/"* \
-    "$ROOTFS/usr/lib/"
+    "$ROOTFS/lib/"
 
 # Install complete glibc tree.
 
@@ -245,14 +246,14 @@ rm -f \
 # Remove unnecessary utilities.
 
 rm -f \
-    "$ROOTFS/usr/bin/tzselect" \
-    "$ROOTFS/usr/bin/zdump" \
-    "$ROOTFS/usr/bin/zic"
+    "$ROOTFS/bin/tzselect" \
+    "$ROOTFS/bin/zdump" \
+    "$ROOTFS/bin/zic"
 
 # Locale directory.
 
 mkdir -p \
-    "$ROOTFS/usr/lib/locale"
+    "$ROOTFS/lib/locale"
 
 # Install locale files directly.
 # No locale.gen is created or modified.
@@ -270,7 +271,7 @@ echo "Compiling libsyscall_without_fsc.so..."
 
 "$CC" \
     "$PACKAGE_DIR/syscall.c" \
-    -o "$ROOTFS/usr/lib/libsyscall_without_fsc.so" \
+    -o "$ROOTFS/lib/libsyscall_without_fsc.so" \
     -shared \
     -DWITHOUT_FAKESYSCALL
 
