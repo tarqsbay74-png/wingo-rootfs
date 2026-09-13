@@ -1,4 +1,3 @@
-
 #!/usr/bin/bash
 
 set -e
@@ -215,6 +214,8 @@ STAGE="$BUILD/glibc-stage"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
 
+# Install runtime libraries first.
+
 make \
     DESTDIR="$STAGE" \
     elf/ldso_install \
@@ -230,18 +231,31 @@ cp -r \
     "$STAGE/usr/lib/"* \
     "$ROOTFS/usr/lib/"
 
+# Install complete glibc tree.
+
 make \
     DESTDIR="$ROOTFS" \
     install
 
-rm -f "$ROOTFS/etc/ld.so.cache"
+# Remove ld cache.
+
+rm -f \
+    "$ROOTFS/etc/ld.so.cache"
+
+# Remove unnecessary utilities.
 
 rm -f \
     "$ROOTFS/usr/bin/tzselect" \
     "$ROOTFS/usr/bin/zdump" \
     "$ROOTFS/usr/bin/zic"
 
-mkdir -p "$ROOTFS/usr/lib/locale"
+# Locale directory.
+
+mkdir -p \
+    "$ROOTFS/usr/lib/locale"
+
+# Install locale files directly.
+# No locale.gen is created or modified.
 
 make \
     -C "$SRC/localedata" \
@@ -249,10 +263,6 @@ make \
     SUPPORTED-LOCALES="C.UTF-8/UTF-8 en_US.UTF-8/UTF-8" \
     DESTDIR="$ROOTFS" \
     install-locale-files
-
-sed -i \
-    '/#C\.UTF-8 /d' \
-    "$ROOTFS/etc/locale.gen"
 
 # Build syscall library.
 
