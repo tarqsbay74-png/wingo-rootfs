@@ -2,7 +2,8 @@
 
 set -e
 
-OUTPUT_FILE="${1:-android_ids.h}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUTPUT_FILE="$SCRIPT_DIR/glibc-2.44/nss/android_ids.h"
 
 cat > "$OUTPUT_FILE" <<'EOF'
 #ifndef _SYSTEM_IDS_H
@@ -40,5 +41,3 @@ static const struct system_id_info system_ids[] = {
 
 #endif
 EOF
-
-echo "Generated: $OUTPUT_FILE"
