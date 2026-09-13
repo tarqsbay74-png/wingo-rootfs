@@ -1,3 +1,4 @@
+
 #!/usr/bin/bash
 
 set -e
@@ -163,3 +164,123 @@ done
 # Configure.
 
 cd "$BUILD"
+
+echo "slibdir=${LIBDIR}" > configparms
+echo "rtlddir=${LIBDIR}" >> configparms
+echo "sbindir=${PREFIX}/bin" >> configparms
+echo "rootsbindir=${PREFIX}/bin" >> configparms
+
+CFLAGS="${CFLAGS/-Wp,-D_FORTIFY_SOURCE=2 / }"
+CFLAGS="${CFLAGS/-Werror / }"
+
+export CFLAGS
+
+"$SRC/configure" \
+    --prefix="$PREFIX" \
+    --libdir="$LIBDIR" \
+    --libexecdir="$LIBDIR" \
+    --includedir="${PREFIX}/include" \
+    --host="$HOST" \
+    --build="$(gcc -dumpmachine)" \
+    --target="$HOST" \
+    --with-bugurl="https://www.gnu.org/software/libc/" \
+    --with-pkgversion="GNU libc AArch64" \
+    --enable-shared \
+    --enable-bind-now \
+    --enable-stack-protector=strong \
+    --enable-fortify-source \
+    --disable-multi-arch \
+    --disable-systemtap \
+    --disable-build-nscd \
+    --disable-nscd \
+    --disable-profile \
+    --disable-default-pie \
+    --disable-timezone-tools \
+    --disable-pt_chown \
+    --disable-sframe \
+    --disable-werror
+
+# Build.
+
+make -O
+
+# Install.
+
+rm -rf "$ROOTFS"
+
+mkdir -p "$ROOTFS"
+
+STAGE="$BUILD/glibc-stage"
+
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+
+make \
+    DESTDIR="$STAGE" \
+    elf/ldso_install \
+    install-lib
+
+cp \
+    "$BUILD/libc.so" \
+    "$STAGE/usr/lib/libc.so.6"
+
+mkdir -p "$ROOTFS/usr/lib"
+
+cp -r \
+    "$STAGE/usr/lib/"* \
+    "$ROOTFS/usr/lib/"
+
+make \
+    DESTDIR="$ROOTFS" \
+    install
+
+rm -f "$ROOTFS/etc/ld.so.cache"
+
+rm -f \
+    "$ROOTFS/usr/bin/tzselect" \
+    "$ROOTFS/usr/bin/zdump" \
+    "$ROOTFS/usr/bin/zic"
+
+mkdir -p "$ROOTFS/usr/lib/locale"
+
+make \
+    -C "$SRC/localedata" \
+    objdir="$BUILD" \
+    SUPPORTED-LOCALES="C.UTF-8/UTF-8 en_US.UTF-8/UTF-8" \
+    DESTDIR="$ROOTFS" \
+    install-locale-files
+
+sed -i \
+    '/#C\.UTF-8 /d' \
+    "$ROOTFS/etc/locale.gen"
+
+# Build syscall library.
+
+echo "Compiling libsyscall_without_fsc.so..."
+
+"$CC" \
+    "$PACKAGE_DIR/syscall.c" \
+    -o "$ROOTFS/usr/lib/libsyscall_without_fsc.so" \
+    -shared \
+    -DWITHOUT_FAKESYSCALL
+
+echo "DONE"
+
+# Compress rootfs.
+
+ROOTFS_ARCHIVE="${PACKAGE_DIR}/glibc-${PKG_VERSION}-aarch64-rootfs.tar.xz"
+
+rm -f "$ROOTFS_ARCHIVE"
+
+tar -cJf \
+    "$ROOTFS_ARCHIVE" \
+    -C "$ROOTFS" \
+    .
+
+echo
+echo "=========================================="
+echo "glibc AArch64 build completed"
+echo "=========================================="
+echo
+echo "Rootfs : $ROOTFS"
+echo "Archive: $ROOTFS_ARCHIVE"
