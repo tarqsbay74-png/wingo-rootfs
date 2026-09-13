@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Wingo / Standalone Glibc Cross-Build Script (x86_64 -> aarch64)
-# Matched with Termux-Pacman glibc 2.44 build steps
 # ==============================================================================
 
 set -e
@@ -10,6 +9,7 @@ set -e
 # 1. Environment & Variable Configuration
 # ------------------------------------------------------------------------------
 PREFIX="${PREFIX:-/data/data/com.wingo/files/rootfs}"
+PREFIX_CLASSICAL="${PREFIX_CLASSICAL:-${PREFIX}}"
 LIBDIR="${LIBDIR:-${PREFIX}/lib}"
 INCLUDEDIR="${INCLUDEDIR:-${PREFIX}/include}"
 BINDIR="${BINDIR:-${PREFIX}/bin}"
@@ -98,7 +98,7 @@ patch_package_step() {
 	shopt -u nullglob
 
 	if [ ${#patch_files[@]} -eq 0 ]; then
-		echo "[!] No patches found matching architecture (64-bit) in ${PATCHES_DIR}."
+		echo "[!] No patches found matching architecture in ${PATCHES_DIR}."
 		return 0
 	fi
 
@@ -111,20 +111,20 @@ patch_package_step() {
 }
 
 # ------------------------------------------------------------------------------
-# Step 3: Pre-Configure Step (Matched with Termux termux_step_pre_configure)
+# Step 3: Pre-Configure Step
 # ------------------------------------------------------------------------------
 pre_configure_step() {
 	echo "[+] Running Pre-Configure Step for ${PKG_NAME} ${PKG_VERSION}..."
 
-	# 1. Disable clone3 and x86_64 ldd configure scripts
+	# 1. Disabling clone3 function & x86_64 ldd configure
 	rm -f ${SRCDIR}/sysdeps/unix/sysv/linux/*/clone3.S 2>/dev/null || true
 	rm -f ${SRCDIR}/sysdeps/unix/sysv/linux/x86_64/configure* 2>/dev/null || true
 
-	# 2. Copy system call helper files
+	# 2. Installing special scripts for system calls
 	cp -f ${PATCHES_DIR}/{shm{at,ctl,dt,get}.c,mprotect.c,syscall.c,fakesyscall*.h,fake_epoll_pwait2.c,setfs{u,g}id.c} \
 		${SRCDIR}/sysdeps/unix/sysv/linux/ 2>/dev/null || true
 
-	# 3. Copy user/group NSS files & generate Android IDs header
+	# 3. Installing and configuring scripts for parsing users/groups (Android standard)
 	cp -f ${PATCHES_DIR}/{android_passwd_group.*,android_system_user_ids.h} \
 		${SRCDIR}/nss/ 2>/dev/null || true
 
@@ -135,17 +135,19 @@ pre_configure_step() {
 			"${PATCHES_DIR}/android_system_user_ids.h" || true
 	fi
 
-	# 4. Copy syslog and shmem helper scripts
+	# 4. Installing syslog script for Android log system
 	cp -f ${PATCHES_DIR}/syslog.c ${SRCDIR}/misc/ 2>/dev/null || true
+
+	# 5. Installing shmem-android scripts for System V shared memory emulation
 	cp -f ${PATCHES_DIR}/shmem-android.* ${SRCDIR}/sysvipc/ 2>/dev/null || true
 
-	# 5. Process fakesyscall.json using JQ to inject disabled-syscall.h
+	# 6. Process fakesyscall.json using JQ to inject disabled-syscall.h
 	if [ -f "${PATCHES_DIR}/fakesyscall.json" ] && command -v jq &>/dev/null; then
 		echo "[+] Processing fakesyscall.json with JQ..."
 		for i in aarch64 arm i386 x86_64/64; do
-			local arch_path="${SRCDIR}/sysdeps/unix/sysv/linux/${i///*/}"
-			if [ -f "${arch_path}/syscall.S" ]; then
-				mv "${arch_path}/syscall.S" "${arch_path}/syscallS.S"
+			local arch_dir="${SRCDIR}/sysdeps/unix/sysv/linux/${i///*/}"
+			if [ -f "${arch_dir}/syscall.S" ]; then
+				mv "${arch_dir}/syscall.S" "${arch_dir}/syscallS.S"
 			fi
 
 			local header_disabled="${SRCDIR}/sysdeps/unix/sysv/linux/${i}/disabled-syscall.h"
@@ -182,7 +184,7 @@ pre_configure_step() {
 		done
 	fi
 
-	# 6. Replace device paths (/dev/std*) with /proc/self/fd/
+	# 7. Replacing hard paths
 	echo "[+] Updating device path mappings..."
 	for i in /dev/stderr:/proc/self/fd/2 \
 		/dev/stdin:/proc/self/fd/0 \
@@ -192,14 +194,14 @@ pre_configure_step() {
 		done
 	done
 
-	# 7. Update version header
+	# 8. Adding version info to version.h
 	if [ -f "${SRCDIR}/version.h" ]; then
 		sed -i "s/${PKG_VERSION}/${PKG_VERSION}-${APP_PACKAGE}/" "${SRCDIR}/version.h" 2>/dev/null || true
 	fi
 }
 
 # ------------------------------------------------------------------------------
-# Step 4: Configure Step (Matched with Termux termux_step_configure)
+# Step 4: Configure Step
 # ------------------------------------------------------------------------------
 configure_step() {
 	echo "[+] Running Configure Step (Host: ${BUILD_PLATFORM} -> Target: ${HOST_PLATFORM})..."
@@ -211,8 +213,17 @@ configure_step() {
 	echo "sbindir=${BINDIR}" >> configparms
 	echo "rootsbindir=${BINDIR}" >> configparms
 
-	local _configure_flags=(--enable-memory-tagging --enable-fortify-source)
-	local _pkgversion="GNU libc for Android/${APP_PACKAGE}"
+	local _configure_flags=()
+	case "${TARGET_ARCH}" in
+		"aarch64") _configure_flags+=(--enable-memory-tagging --enable-fortify-source);;
+		"arm"|"i686") _configure_flags+=(--enable-fortify-source);;
+		"x86_64") _configure_flags+=(--enable-cet);;
+	esac
+
+	local _pkgversion="GNU libc for Wingo Android"
+	if [ -n "${APP_PACKAGE}" ]; then
+		_pkgversion+="/${APP_PACKAGE}"
+	fi
 
 	CFLAGS="${CFLAGS/-Wp,-D_FORTIFY_SOURCE=2 / }"
 	CFLAGS="${CFLAGS/-Werror / }"
@@ -226,7 +237,6 @@ configure_step() {
 		--host="${HOST_PLATFORM}" \
 		--build="${BUILD_PLATFORM}" \
 		--target="${HOST_PLATFORM}" \
-		--with-bugurl="https://github.com/termux-pacman/glibc-packages/issues" \
 		--with-pkgversion="${_pkgversion}" \
 		--enable-bind-now \
 		--enable-fortify-source \
@@ -241,7 +251,7 @@ configure_step() {
 }
 
 # ------------------------------------------------------------------------------
-# Step 5: Compile Step (Matched with Termux termux_step_make)
+# Step 5: Compile Step
 # ------------------------------------------------------------------------------
 make_step() {
 	echo "[+] Compiling Glibc using cross-compiler ${CC}..."
@@ -251,13 +261,13 @@ make_step() {
 
 # ------------------------------------------------------------------------------
 # Helper Function: Build libsyscall_without_fsc.so
-# (Matched with termux_glibc_make_syscall_without_fsc)
 # ------------------------------------------------------------------------------
 make_syscall_without_fsc() {
 	local libname="libsyscall_without_fsc.so"
 	local target_lib_dir="${DESTDIR:-}${LIBDIR}"
 	echo "[+] Compiling '${libname}'..."
 	if [ -f "${PATCHES_DIR}/syscall.c" ]; then
+		mkdir -p "${target_lib_dir}"
 		${CC} "${PATCHES_DIR}/syscall.c" -o "${target_lib_dir}/${libname}" \
 			-shared -fPIC -DWITHOUT_FAKESYSCALL || echo "[!] Failed to compile ${libname}"
 		echo "[+] '${libname}' compiled successfully."
@@ -265,7 +275,7 @@ make_syscall_without_fsc() {
 }
 
 # ------------------------------------------------------------------------------
-# Step 6: Install Step (Matched with Termux termux_step_make_install)
+# Step 6: Install Step
 # ------------------------------------------------------------------------------
 install_step() {
 	echo "[+] Installing Glibc to ${PREFIX}..."
@@ -278,14 +288,13 @@ install_step() {
 	rm -f "${DESTDIR:-}${PREFIX}/etc/ld.so.cache"
 	rm -f "${DESTDIR:-}${BINDIR}/"{tzselect,zdump,zic}
 
-	mkdir -p "${DESTDIR:-}${LIBDIR}/tmpfiles.d"
+	install -dm755 "${DESTDIR:-}${LIBDIR}/tmpfiles.d"
 	[ -f "${SRCDIR}/nscd/nscd.conf" ] && install -m644 "${SRCDIR}/nscd/nscd.conf" "${DESTDIR:-}${PREFIX}/etc/nscd.conf"
 	[ -f "${SRCDIR}/nscd/nscd.tmpfiles" ] && install -m644 "${SRCDIR}/nscd/nscd.tmpfiles" "${DESTDIR:-}${LIBDIR}/tmpfiles.d/nscd.conf"
 	[ -f "${SRCDIR}/posix/gai.conf" ] && install -m644 "${SRCDIR}/posix/gai.conf" "${DESTDIR:-}${PREFIX}/etc/gai.conf"
 
 	if [ -f "${PATCHES_DIR}/locale-gen" ]; then
 		install -m755 "${PATCHES_DIR}/locale-gen" "${DESTDIR:-}${BINDIR}/locale-gen"
-		sed -i "s|@TERMUX_PREFIX@|${PREFIX}|g" "${DESTDIR:-}${BINDIR}/locale-gen" 2>/dev/null || true
 	fi
 
 	if [ -f "${PATCHES_DIR}/locale.gen.txt" ]; then
@@ -302,7 +311,7 @@ install_step() {
 			"${SRCDIR}/localedata/SUPPORTED" > "${DESTDIR:-}${PREFIX}/share/i18n/SUPPORTED"
 	fi
 
-	mkdir -p "${DESTDIR:-}${LIBDIR}/locale"
+	install -dm755 "${DESTDIR:-}${LIBDIR}/locale"
 	if [ -d "${SRCDIR}/localedata" ]; then
 		make -C "${SRCDIR}/localedata" objdir="${BUILDDIR}" \
 			SUPPORTED-LOCALES="C.UTF-8/UTF-8 en_US.UTF-8/UTF-8" install-locale-files DESTDIR="${DESTDIR:-}" || true
