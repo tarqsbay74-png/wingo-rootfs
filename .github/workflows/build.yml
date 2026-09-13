@@ -1,52 +1,107 @@
-name: Build Glibc RootFS (aarch64)
+name: Build glibc AArch64 GNU
 
 on:
-  push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
   build-glibc:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install GNU AArch64 toolchain
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
+            gcc \
+            g++ \
+            make \
+            binutils \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
-            build-essential \
+            binutils-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            linux-libc-dev-arm64-cross \
+            libgcc-12-dev-arm64-cross \
+            libstdc++-12-dev-arm64-cross \
             bison \
             gawk \
             gettext \
             texinfo \
+            perl \
+            python3 \
+            python3-dev \
             jq \
-            tar \
-            xz-utils \
-            wget \
             curl \
-            patch
+            patch \
+            xz-utils \
+            file \
+            unzip \
+            pkg-config \
+            libgmp-dev \
+            libmpfr-dev \
+            libmpc-dev \
+            flex \
+            sed \
+            grep \
+            coreutils \
+            tar
 
-      - name: Make build script executable
+      - name: Verify GNU AArch64 toolchain
+        run: |
+          aarch64-linux-gnu-gcc --version
+          aarch64-linux-gnu-g++ --version
+          aarch64-linux-gnu-as --version
+          aarch64-linux-gnu-ld --version
+          aarch64-linux-gnu-ar --version
+          aarch64-linux-gnu-ranlib --version
+          aarch64-linux-gnu-nm --version
+          aarch64-linux-gnu-objcopy --version
+          aarch64-linux-gnu-objdump --version
+          aarch64-linux-gnu-readelf --version
+          aarch64-linux-gnu-strip --version
+
+      - name: Prepare GNU AArch64 environment
+        run: |
+          echo "CC=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CXX=aarch64-linux-gnu-g++" >> "$GITHUB_ENV"
+          echo "CPP=aarch64-linux-gnu-cpp" >> "$GITHUB_ENV"
+          echo "AR=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
+          echo "AS=aarch64-linux-gnu-as" >> "$GITHUB_ENV"
+          echo "LD=aarch64-linux-gnu-ld" >> "$GITHUB_ENV"
+          echo "NM=aarch64-linux-gnu-nm" >> "$GITHUB_ENV"
+          echo "OBJCOPY=aarch64-linux-gnu-objcopy" >> "$GITHUB_ENV"
+          echo "OBJDUMP=aarch64-linux-gnu-objdump" >> "$GITHUB_ENV"
+          echo "RANLIB=aarch64-linux-gnu-ranlib" >> "$GITHUB_ENV"
+          echo "READELF=aarch64-linux-gnu-readelf" >> "$GITHUB_ENV"
+          echo "STRIP=aarch64-linux-gnu-strip" >> "$GITHUB_ENV"
+
+          echo "HOST=aarch64-linux-gnu" >> "$GITHUB_ENV"
+          echo "ARCH=aarch64" >> "$GITHUB_ENV"
+
+      - name: Build glibc
         run: |
           chmod +x packages/glibc/build.sh
+          ./packages/glibc/build.sh
 
-      - name: Execute cross-build script
-        working-directory: packages/glibc
+      - name: Verify glibc rootfs
         run: |
-          ./build.sh
+          test -f packages/glibc/glibc-2.44-aarch64-rootfs.tar.xz
 
-      - name: Upload RootFS Artifact
+          file \
+            packages/glibc/glibc-2.44-aarch64-rootfs.tar.xz
+
+          tar -tJf \
+            packages/glibc/glibc-2.44-aarch64-rootfs.tar.xz \
+            | head -50
+
+      - name: Upload glibc rootfs
         uses: actions/upload-artifact@v4
         with:
-          name: wingo-rootfs-aarch64
-          path: packages/glibc/wingo-rootfs-aarch64.tar.xz
+          name: glibc-2.44-aarch64-rootfs
+          path: packages/glibc/glibc-2.44-aarch64-rootfs.tar.xz
           if-no-files-found: error
-          retention-days: 7
-          
+          compression-level: 0
