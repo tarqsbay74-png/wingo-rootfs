@@ -11,6 +11,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        run: |
+          while true; do
+            {
+              sudo apt-get update
+              yes | sudo apt-get install qemu-user qemu-user-static binfmt-support
+            } || continue
+            break
+          done
+
+          sudo update-binfmts --enable qemu-aarch64
+          sudo update-binfmts --enable qemu-arm
+
       - name: Install GNU AArch64 toolchain
         run: |
           sudo apt-get update
