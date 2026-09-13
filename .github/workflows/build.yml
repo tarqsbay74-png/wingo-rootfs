@@ -1,122 +1,121 @@
 name: Build glibc AArch64 GNU
 
-on:
-workflow_dispatch:
+on: workflow_dispatch
 
 jobs:
-build-glibc:
-runs-on: ubuntu-24.04
+  build-glibc:
+    runs-on: ubuntu-24.04
 
-steps:
-  - name: Checkout
-    uses: actions/checkout@v4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  - name: Set up QEMU
-    run: |
-      while true; do
-        {
+      - name: Set up QEMU
+        run: |
+          while true; do
+            {
+              sudo apt-get update
+              yes | sudo apt-get install qemu-user qemu-user-static binfmt-support
+            } || continue
+            break
+          done
+
+          sudo update-binfmts --enable qemu-aarch64
+          sudo update-binfmts --enable qemu-arm
+
+      - name: Install GNU AArch64 toolchain
+        run: |
           sudo apt-get update
-          yes | sudo apt-get install qemu-user qemu-user-static binfmt-support
-        } || continue
-        break
-      done
 
-      sudo update-binfmts --enable qemu-aarch64
-      sudo update-binfmts --enable qemu-arm
+          sudo apt-get install -y \
+            gcc \
+            g++ \
+            make \
+            binutils \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            linux-libc-dev-arm64-cross \
+            libgcc-12-dev-arm64-cross \
+            libstdc++-12-dev-arm64-cross \
+            bison \
+            gawk \
+            gettext \
+            texinfo \
+            perl \
+            python3 \
+            python3-dev \
+            jq \
+            curl \
+            patch \
+            xz-utils \
+            file \
+            unzip \
+            pkg-config \
+            libgmp-dev \
+            libmpfr-dev \
+            libmpc-dev \
+            flex \
+            sed \
+            grep \
+            coreutils \
+            tar
 
-  - name: Install GNU AArch64 toolchain
-    run: |
-      sudo apt-get update
+      - name: Verify GNU AArch64 toolchain
+        run: |
+          aarch64-linux-gnu-gcc --version
+          aarch64-linux-gnu-g++ --version
+          aarch64-linux-gnu-as --version
+          aarch64-linux-gnu-ld --version
+          aarch64-linux-gnu-ar --version
+          aarch64-linux-gnu-ranlib --version
+          aarch64-linux-gnu-nm --version
+          aarch64-linux-gnu-objcopy --version
+          aarch64-linux-gnu-objdump --version
+          aarch64-linux-gnu-readelf --version
+          aarch64-linux-gnu-strip --version
 
-      sudo apt-get install -y \
-        gcc \
-        g++ \
-        make \
-        binutils \
-        gcc-aarch64-linux-gnu \
-        g++-aarch64-linux-gnu \
-        binutils-aarch64-linux-gnu \
-        libc6-dev-arm64-cross \
-        linux-libc-dev-arm64-cross \
-        libgcc-12-dev-arm64-cross \
-        libstdc++-12-dev-arm64-cross \
-        bison \
-        gawk \
-        gettext \
-        texinfo \
-        perl \
-        python3 \
-        python3-dev \
-        jq \
-        curl \
-        patch \
-        xz-utils \
-        file \
-        unzip \
-        pkg-config \
-        libgmp-dev \
-        libmpfr-dev \
-        libmpc-dev \
-        flex \
-        sed \
-        grep \
-        coreutils \
-        tar
+      - name: Prepare GNU AArch64 environment
+        run: |
+          echo "CC=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CXX=aarch64-linux-gnu-g++" >> "$GITHUB_ENV"
+          echo "CPP=aarch64-linux-gnu-cpp" >> "$GITHUB_ENV"
+          echo "AR=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
+          echo "AS=aarch64-linux-gnu-as" >> "$GITHUB_ENV"
+          echo "LD=aarch64-linux-gnu-ld" >> "$GITHUB_ENV"
+          echo "NM=aarch64-linux-gnu-nm" >> "$GITHUB_ENV"
+          echo "OBJCOPY=aarch64-linux-gnu-objcopy" >> "$GITHUB_ENV"
+          echo "OBJDUMP=aarch64-linux-gnu-objdump" >> "$GITHUB_ENV"
+          echo "RANLIB=aarch64-linux-gnu-ranlib" >> "$GITHUB_ENV"
+          echo "READELF=aarch64-linux-gnu-readelf" >> "$GITHUB_ENV"
+          echo "STRIP=aarch64-linux-gnu-strip" >> "$GITHUB_ENV"
 
-  - name: Verify GNU AArch64 toolchain
-    run: |
-      aarch64-linux-gnu-gcc --version
-      aarch64-linux-gnu-g++ --version
-      aarch64-linux-gnu-as --version
-      aarch64-linux-gnu-ld --version
-      aarch64-linux-gnu-ar --version
-      aarch64-linux-gnu-ranlib --version
-      aarch64-linux-gnu-nm --version
-      aarch64-linux-gnu-objcopy --version
-      aarch64-linux-gnu-objdump --version
-      aarch64-linux-gnu-readelf --version
-      aarch64-linux-gnu-strip --version
+          echo "HOST=aarch64-linux-gnu" >> "$GITHUB_ENV"
+          echo "ARCH=aarch64" >> "$GITHUB_ENV"
 
-  - name: Prepare GNU AArch64 environment
-    run: |
-      echo "CC=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-      echo "CXX=aarch64-linux-gnu-g++" >> "$GITHUB_ENV"
-      echo "CPP=aarch64-linux-gnu-cpp" >> "$GITHUB_ENV"
-      echo "AR=aarch64-linux-gnu-ar" >> "$GITHUB_ENV"
-      echo "AS=aarch64-linux-gnu-as" >> "$GITHUB_ENV"
-      echo "LD=aarch64-linux-gnu-ld" >> "$GITHUB_ENV"
-      echo "NM=aarch64-linux-gnu-nm" >> "$GITHUB_ENV"
-      echo "OBJCOPY=aarch64-linux-gnu-objcopy" >> "$GITHUB_ENV"
-      echo "OBJDUMP=aarch64-linux-gnu-objdump" >> "$GITHUB_ENV"
-      echo "RANLIB=aarch64-linux-gnu-ranlib" >> "$GITHUB_ENV"
-      echo "READELF=aarch64-linux-gnu-readelf" >> "$GITHUB_ENV"
-      echo "STRIP=aarch64-linux-gnu-strip" >> "$GITHUB_ENV"
+      - name: Build glibc
+        run: |
+          sudo mkdir -p /data/data/com.wingo/files/rootfs
+          sudo chmod -R 777 /data
+          chmod +x packages/glibc/build.sh
+          ./packages/glibc/build.sh
 
-      echo "HOST=aarch64-linux-gnu" >> "$GITHUB_ENV"
-      echo "ARCH=aarch64" >> "$GITHUB_ENV"
+      - name: Verify glibc rootfs
+        run: |
+          test -f packages/glibc/glibc-2.44-aarch64-rootfs.tar.xz
 
-  - name: Build glibc
-    run: |
-      sudo mkdir -p /data/data/com.wingo/files/rootfs
-      sudo chmod -R 777 /data
-      chmod +x packages/glibc/build.sh
-      ./packages/glibc/build.sh
+          file \
+            packages/glibc/glibc-2.44-aarch64-rootfs.tar.xz
 
-  - name: Verify glibc rootfs
-    run: |
-      test -f packages/glibc/glibc-2.44-aarch64-rootfs.tar.xz
+          tar -tJf \
+            packages/glibc/glibc-2.44-aarch64-rootfs.tar.xz \
+            | head -50
 
-      file \
-        packages/glibc/glibc-2.44-aarch64-rootfs.tar.xz
-
-      tar -tJf \
-        packages/glibc/glibc-2.44-aarch64-rootfs.tar.xz \
-        | head -50
-
-  - name: Upload glibc rootfs
-    uses: actions/upload-artifact@v4
-    with:
-      name: glibc-2.44-aarch64-rootfs
-      path: packages/glibc/glibc-2.44-aarch64-rootfs.tar.xz
-      if-no-files-found: error
-      compression-level: 0
+      - name: Upload glibc rootfs
+        uses: actions/upload-artifact@v4
+        with:
+          name: glibc-2.44-aarch64-rootfs
+          path: packages/glibc/glibc-2.44-aarch64-rootfs.tar.xz
+          if-no-files-found: error
+          compression-level: 0
