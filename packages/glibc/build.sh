@@ -12,7 +12,7 @@ ROOTFS="${GITHUB_WORKSPACE}/packages/glibc/rootfs"
 
 PREFIX="/usr"
 LIBDIR="/usr/lib"
-HOST="aarch64-linux-android"
+HOST="aarch64-linux-gnu"
 
 GLIBC_TARBALL="${GITHUB_WORKSPACE}/packages/glibc/glibc-${PKG_VERSION}.tar.xz"
 
