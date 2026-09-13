@@ -1,365 +1,281 @@
-#!/usr/bin/env bash
-# ==============================================================================
-# Wingo / Standalone Glibc Cross-Build Script (x86_64 -> aarch64)
-# ==============================================================================
+#!/usr/bin/bash
 
 set -e
 
-# ------------------------------------------------------------------------------
-# 1. Environment & Variable Configuration
-# ------------------------------------------------------------------------------
-PREFIX="${PREFIX:-/data/data/com.wingo/files/rootfs}"
-PREFIX_CLASSICAL="${PREFIX_CLASSICAL:-${PREFIX}}"
-LIBDIR="${LIBDIR:-${PREFIX}/lib}"
-INCLUDEDIR="${INCLUDEDIR:-${PREFIX}/include}"
-BINDIR="${BINDIR:-${PREFIX}/bin}"
-APP_PACKAGE="${APP_PACKAGE:-com.wingo}"
+PKG_VERSION=2.44
+PKG_URL="https://ftp.gnu.org/gnu/glibc/glibc-${PKG_VERSION}.tar.xz"
+PKG_SHA256="37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667"
 
-PKG_NAME="glibc"
-PKG_VERSION="2.44"
-PKG_SRCURL="https://ftp.gnu.org/gnu/libc/glibc-${PKG_VERSION}.tar.xz"
+SRC="${GITHUB_WORKSPACE}/packages/glibc/glibc-${PKG_VERSION}"
+BUILD="${GITHUB_WORKSPACE}/packages/glibc/build"
+ROOTFS="${GITHUB_WORKSPACE}/packages/glibc/rootfs"
 
-# Target & Host Architecture Definitions
-TARGET_ARCH="aarch64"
-HOST_PLATFORM="aarch64-linux-gnu"
-BUILD_PLATFORM="$(gcc -dumpmachine)"
+PREFIX="/usr"
+LIBDIR="/usr/lib"
+HOST="aarch64-linux-android"
 
-# Toolchain Definitions for Cross-Compilation from x86_64
-CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
-CC="${CC:-${CROSS_COMPILE}gcc}"
-CXX="${CXX:-${CROSS_COMPILE}g++}"
-AR="${AR:-${CROSS_COMPILE}ar}"
-RANLIB="${RANLIB:-${CROSS_COMPILE}ranlib}"
+GLIBC_TARBALL="${GITHUB_WORKSPACE}/packages/glibc/glibc-${PKG_VERSION}.tar.xz"
 
-# Working Directories
-BUILDER_DIR="${BUILDER_DIR:-$(pwd)}"
-SRCDIR="${SRCDIR:-${BUILDER_DIR}/src/glibc-${PKG_VERSION}}"
-BUILDDIR="${BUILDDIR:-${BUILDER_DIR}/build}"
-PATCHES_DIR="${BUILDER_DIR}"
+mkdir -p \
+    "${GITHUB_WORKSPACE}/packages/glibc" \
+    "$BUILD" \
+    "$ROOTFS"
 
-# ------------------------------------------------------------------------------
-# Step 0: Download Package
-# ------------------------------------------------------------------------------
-download_package_step() {
-	echo "[+] Downloading ${PKG_NAME} ${PKG_VERSION}..."
-	mkdir -p "${BUILDER_DIR}/downloads"
-	local tarball="${BUILDER_DIR}/downloads/${PKG_NAME}-${PKG_VERSION}.tar.xz"
+rm -rf "$BUILD"/*
+rm -rf "$ROOTFS"/*
 
-	if [ ! -f "${tarball}" ]; then
-		if command -v wget &>/dev/null; then
-			wget -O "${tarball}" "${PKG_SRCURL}"
-		elif command -v curl &>/dev/null; then
-			curl -sSL -o "${tarball}" "${PKG_SRCURL}"
-		else
-			echo "[-] Error: Neither wget nor curl is installed!"
-			return 1
-		fi
-	else
-		echo "[!] Tarball already downloaded: ${tarball}"
-	fi
-}
+# Download and extract source.
 
-# ------------------------------------------------------------------------------
-# Step 1: Extract Package
-# ------------------------------------------------------------------------------
-extract_package_step() {
-	echo "[+] Extracting ${PKG_NAME} ${PKG_VERSION}..."
-	local tarball="${BUILDER_DIR}/downloads/${PKG_NAME}-${PKG_VERSION}.tar.xz"
+if [ ! -d "$SRC" ]; then
+    curl -L \
+        "$PKG_URL" \
+        -o "$GLIBC_TARBALL"
 
-	if [ ! -f "${tarball}" ]; then
-		echo "[-] Error: Tarball '${tarball}' not found!"
-		return 1
-	fi
+    echo "${PKG_SHA256}  ${GLIBC_TARBALL}" | sha256sum -c -
 
-	mkdir -p "${BUILDER_DIR}/src"
-	if [ ! -d "${SRCDIR}" ]; then
-		tar -xf "${tarball}" -C "${BUILDER_DIR}/src"
-		echo "[+] Extracted to ${SRCDIR}"
-	else
-		echo "[!] Source directory already exists: ${SRCDIR}"
-	fi
-}
+    tar -xf \
+        "$GLIBC_TARBALL" \
+        -C "${GITHUB_WORKSPACE}/packages/glibc"
+fi
 
-# ------------------------------------------------------------------------------
-# Step 2: Patch Package
-# ------------------------------------------------------------------------------
-patch_package_step() {
-	echo "[+] Running Patch Step for ${PKG_NAME} (Target: ${TARGET_ARCH})..."
+# Apply patches.
 
-	if [ ! -d "${SRCDIR}" ]; then
-		echo "[-] Error: Source directory '${SRCDIR}' does not exist!"
-		return 1
-	fi
+cd "$SRC"
 
-	cd "${SRCDIR}"
+shopt -s nullglob
 
-	shopt -s nullglob
-	local patch_files=("${PATCHES_DIR}"/*.patch "${PATCHES_DIR}"/*.patch64)
-	shopt -u nullglob
+PATCHES=(
+    "$GITHUB_WORKSPACE"/packages/glibc/*.patch
+    "$GITHUB_WORKSPACE"/packages/glibc/*.patch64
+)
 
-	if [ ${#patch_files[@]} -eq 0 ]; then
-		echo "[!] No patches found matching architecture in ${PATCHES_DIR}."
-		return 0
-	fi
+IFS=$'\n' PATCHES=( $(printf '%s\n' "${PATCHES[@]}" | sort) )
+unset IFS
 
-	for patch in "${patch_files[@]}"; do
-		if [ -f "$patch" ]; then
-			echo "[+] Applying patch: $(basename "$patch")"
-			patch -p1 --silent < "$patch" || echo "[!] Warning: Failed to apply $(basename "$patch") cleanly."
-		fi
-	done
-}
+for patch_file in "${PATCHES[@]}"; do
+    echo "Applying patch: $(basename "$patch_file")"
+    patch --silent -p1 < "$patch_file"
+done
 
-# ------------------------------------------------------------------------------
-# Step 3: Pre-Configure Step
-# ------------------------------------------------------------------------------
-pre_configure_step() {
-	echo "[+] Running Pre-Configure Step for ${PKG_NAME} ${PKG_VERSION}..."
+shopt -u nullglob
 
-	# 1. Disabling clone3 function & x86_64 ldd configure
-	rm -f ${SRCDIR}/sysdeps/unix/sysv/linux/*/clone3.S 2>/dev/null || true
-	rm -f ${SRCDIR}/sysdeps/unix/sysv/linux/x86_64/configure* 2>/dev/null || true
+# Android-specific glibc modifications.
 
-	# 2. Installing special scripts for system calls
-	cp -f ${PATCHES_DIR}/{shm{at,ctl,dt,get}.c,mprotect.c,syscall.c,fakesyscall*.h,fake_epoll_pwait2.c,setfs{u,g}id.c} \
-		${SRCDIR}/sysdeps/unix/sysv/linux/ 2>/dev/null || true
+rm -f "$SRC/sysdeps/unix/sysv/linux/"*/clone3.S
+rm -f "$SRC/sysdeps/unix/sysv/linux/x86_64/configure"*
 
-	# 3. Installing and configuring scripts for parsing users/groups (Android standard)
-	cp -f ${PATCHES_DIR}/{android_passwd_group.*,android_system_user_ids.h} \
-		${SRCDIR}/nss/ 2>/dev/null || true
+cp \
+    "$GITHUB_WORKSPACE"/packages/glibc/{shm{at,ctl,dt,get}.c,mprotect.c,syscall.c,fakesyscall*.h,fake_epoll_pwait2.c,setfs{u,g}id.c} \
+    "$SRC/sysdeps/unix/sysv/linux/"
 
-	if [ -f "${PATCHES_DIR}/gen-android-ids.sh" ]; then
-		echo "[+] Generating Android IDs header..."
-		bash ${PATCHES_DIR}/gen-android-ids.sh "${PREFIX}" \
-			"${SRCDIR}/nss/android_ids.h" \
-			"${PATCHES_DIR}/android_system_user_ids.h" || true
-	fi
+cp \
+    "$GITHUB_WORKSPACE"/packages/glibc/{android_passwd_group.*,android_system_user_ids.h} \
+    "$SRC/nss/"
 
-	# 4. Installing syslog script for Android log system
-	cp -f ${PATCHES_DIR}/syslog.c ${SRCDIR}/misc/ 2>/dev/null || true
+bash \
+    "$GITHUB_WORKSPACE/packages/glibc/gen-android-ids.sh" \
+    "$GITHUB_WORKSPACE/packages/glibc" \
+    "$SRC/nss/android_ids.h" \
+    "$GITHUB_WORKSPACE/packages/glibc/android_system_user_ids.h"
 
-	# 5. Installing shmem-android scripts for System V shared memory emulation
-	cp -f ${PATCHES_DIR}/shmem-android.* ${SRCDIR}/sysvipc/ 2>/dev/null || true
+cp \
+    "$GITHUB_WORKSPACE/packages/glibc/syslog.c" \
+    "$SRC/misc/"
 
-	# 6. Process fakesyscall.json using JQ to inject disabled-syscall.h
-	if [ -f "${PATCHES_DIR}/fakesyscall.json" ] && command -v jq &>/dev/null; then
-		echo "[+] Processing fakesyscall.json with JQ..."
-		for i in aarch64 arm i386 x86_64/64; do
-			local arch_dir="${SRCDIR}/sysdeps/unix/sysv/linux/${i///*/}"
-			if [ -f "${arch_dir}/syscall.S" ]; then
-				mv "${arch_dir}/syscall.S" "${arch_dir}/syscallS.S"
-			fi
+cp \
+    "$GITHUB_WORKSPACE"/packages/glibc/shmem-android.* \
+    "$SRC/sysvipc/"
 
-			local header_disabled="${SRCDIR}/sysdeps/unix/sysv/linux/${i}/disabled-syscall.h"
-			mkdir -p "$(dirname "${header_disabled}")"
-			echo "" > "${header_disabled}"
+mv \
+    "$SRC/sysdeps/unix/sysv/linux/aarch64/syscall.S" \
+    "$SRC/sysdeps/unix/sysv/linux/aarch64/syscallS.S"
 
-			{
-				for j in $(jq -r '.[] | .[]' ${PATCHES_DIR}/fakesyscall.json); do
-					grep "#define __NR_${j} " ${SRCDIR}/sysdeps/unix/sysv/linux/${i}/arch-syscall.h 2>/dev/null || true
-					sed -i "/#define __NR_${j} /d" ${SRCDIR}/sysdeps/unix/sysv/linux/${i}/arch-syscall.h 2>/dev/null || true
-				done
-			} >> "${header_disabled}"
+HEADER="$SRC/sysdeps/unix/sysv/linux/aarch64/disabled-syscall.h"
 
-			{
-				echo -e "\n#define DISABLED_SYSCALL_WITH_FAKESYSCALL \\"
-				local IFS=$'\n'
-				for j in $(jq -r '. | keys | .[]' ${PATCHES_DIR}/fakesyscall.json); do
-					local need_return=false
-					for z in $(jq -r '."'${j}'" | .[]' ${PATCHES_DIR}/fakesyscall.json); do
-						if grep -q "^#define __NR_${z} " "${header_disabled}" 2>/dev/null; then
-							echo -e "\tcase __NR_${z}: \\"
-							need_return=true
-						elif [[ ${z} =~ ^[0-9]+$ ]]; then
-							echo -e "\tcase ${z}: \\"
-							need_return=true
-						fi
-					done
-					[ "${need_return}" = "true" ] && echo -e "\t\treturn ${j}; \\"
-				done
-				unset IFS
-			} >> "${header_disabled}"
+{
+    for syscall in $(jq -r '.[] | .[]' \
+        "$GITHUB_WORKSPACE/packages/glibc/fakesyscall.json"); do
 
-			sed -i '$ s| \\||' "${header_disabled}"
-		done
-	fi
+        grep \
+            "#define __NR_${syscall} " \
+            "$SRC/sysdeps/unix/sysv/linux/aarch64/arch-syscall.h" \
+            || true
 
-	# 7. Replacing hard paths
-	echo "[+] Updating device path mappings..."
-	for i in /dev/stderr:/proc/self/fd/2 \
-		/dev/stdin:/proc/self/fd/0 \
-		/dev/stdout:/proc/self/fd/1; do
-		for j in $(grep -s -r -l "${i%%:*}" "${SRCDIR}" 2>/dev/null); do
-			sed -i "s|${i%%:*}|${i//*:}|g" "${j}"
-		done
-	done
+        sed -i \
+            "/#define __NR_${syscall} /d" \
+            "$SRC/sysdeps/unix/sysv/linux/aarch64/arch-syscall.h"
+    done
+} >> "$HEADER"
 
-	# 8. Adding version info to version.h
-	if [ -f "${SRCDIR}/version.h" ]; then
-		sed -i "s/${PKG_VERSION}/${PKG_VERSION}-${APP_PACKAGE}/" "${SRCDIR}/version.h" 2>/dev/null || true
-	fi
-}
+{
+    echo
+    echo '#define DISABLED_SYSCALL_WITH_FAKESYSCALL \'
 
-# ------------------------------------------------------------------------------
-# Step 4: Configure Step
-# ------------------------------------------------------------------------------
-configure_step() {
-	echo "[+] Running Configure Step (Host: ${BUILD_PLATFORM} -> Target: ${HOST_PLATFORM})..."
-	mkdir -p "${BUILDDIR}"
-	cd "${BUILDDIR}"
+    IFS=$'\n'
 
-	echo "slibdir=${LIBDIR}" > configparms
-	echo "rtlddir=${LIBDIR}" >> configparms
-	echo "sbindir=${BINDIR}" >> configparms
-	echo "rootsbindir=${BINDIR}" >> configparms
+    for function in $(jq -r '. | keys | .[]' \
+        "$GITHUB_WORKSPACE/packages/glibc/fakesyscall.json"); do
 
-	local _configure_flags=()
-	case "${TARGET_ARCH}" in
-		"aarch64") _configure_flags+=(--enable-memory-tagging --enable-fortify-source);;
-		"arm"|"i686") _configure_flags+=(--enable-fortify-source);;
-		"x86_64") _configure_flags+=(--enable-cet);;
-	esac
+        need_return=false
 
-	local _pkgversion="GNU libc for Wingo Android"
-	if [ -n "${APP_PACKAGE}" ]; then
-		_pkgversion+="/${APP_PACKAGE}"
-	fi
+        for syscall in $(jq -r '."'${function}'" | .[]' \
+            "$GITHUB_WORKSPACE/packages/glibc/fakesyscall.json"); do
 
-	CFLAGS="${CFLAGS/-Wp,-D_FORTIFY_SOURCE=2 / }"
-	CFLAGS="${CFLAGS/-Werror / }"
+            if grep -q \
+                "^#define __NR_${syscall} " \
+                "$HEADER"; then
 
-	CC="${CC}" CXX="${CXX}" AR="${AR}" RANLIB="${RANLIB}" \
-	${SRCDIR}/configure \
-		--prefix="${PREFIX}" \
-		--libdir="${LIBDIR}" \
-		--libexecdir="${LIBDIR}" \
-		--includedir="${INCLUDEDIR}" \
-		--host="${HOST_PLATFORM}" \
-		--build="${BUILD_PLATFORM}" \
-		--target="${HOST_PLATFORM}" \
-		--with-pkgversion="${_pkgversion}" \
-		--enable-bind-now \
-		--enable-fortify-source \
-		--disable-multi-arch \
-		--enable-stack-protector=strong \
-		--enable-systemtap \
-		--disable-nscd \
-		--disable-profile \
-		--disable-werror \
-		--disable-default-pie \
-		"${_configure_flags[@]}"
-}
+                echo -e "\tcase __NR_${syscall}: \\"
+                need_return=true
 
-# ------------------------------------------------------------------------------
-# Step 5: Compile Step
-# ------------------------------------------------------------------------------
-make_step() {
-	echo "[+] Compiling Glibc using cross-compiler ${CC}..."
-	cd "${BUILDDIR}"
-	make -j$(nproc) -O
-}
+            elif [[ "$syscall" =~ ^[0-9]+$ ]]; then
 
-# ------------------------------------------------------------------------------
-# Helper Function: Build libsyscall_without_fsc.so
-# ------------------------------------------------------------------------------
-make_syscall_without_fsc() {
-	local libname="libsyscall_without_fsc.so"
-	local target_lib_dir="${DESTDIR:-}${LIBDIR}"
-	echo "[+] Compiling '${libname}'..."
-	if [ -f "${PATCHES_DIR}/syscall.c" ]; then
-		mkdir -p "${target_lib_dir}"
-		${CC} "${PATCHES_DIR}/syscall.c" -o "${target_lib_dir}/${libname}" \
-			-shared -fPIC -DWITHOUT_FAKESYSCALL || echo "[!] Failed to compile ${libname}"
-		echo "[+] '${libname}' compiled successfully."
-	fi
-}
+                echo -e "\tcase ${syscall}: \\"
+                need_return=true
+            fi
+        done
 
-# ------------------------------------------------------------------------------
-# Step 6: Install Step
-# ------------------------------------------------------------------------------
-install_step() {
-	echo "[+] Installing Glibc to ${PREFIX}..."
-	cd "${BUILDDIR}"
+        [ "$need_return" = true ] &&
+            echo -e "\t\treturn ${function}; \\"
+    done
 
-	rm -rf "${DESTDIR:-}${INCLUDEDIR}/gnu"
+    unset IFS
+} >> "$HEADER"
 
-	make install DESTDIR="${DESTDIR:-}"
+sed -i '$ s| \\||' "$HEADER"
 
-	rm -f "${DESTDIR:-}${PREFIX}/etc/ld.so.cache"
-	rm -f "${DESTDIR:-}${BINDIR}/"{tzselect,zdump,zic}
+for path in \
+    /dev/stderr:/proc/self/fd/2 \
+    /dev/stdin:/proc/self/fd/0 \
+    /dev/stdout:/proc/self/fd/1; do
 
-	install -dm755 "${DESTDIR:-}${LIBDIR}/tmpfiles.d"
-	[ -f "${SRCDIR}/nscd/nscd.conf" ] && install -m644 "${SRCDIR}/nscd/nscd.conf" "${DESTDIR:-}${PREFIX}/etc/nscd.conf"
-	[ -f "${SRCDIR}/nscd/nscd.tmpfiles" ] && install -m644 "${SRCDIR}/nscd/nscd.tmpfiles" "${DESTDIR:-}${LIBDIR}/tmpfiles.d/nscd.conf"
-	[ -f "${SRCDIR}/posix/gai.conf" ] && install -m644 "${SRCDIR}/posix/gai.conf" "${DESTDIR:-}${PREFIX}/etc/gai.conf"
+    for file in $(grep -s -r -l "${path%%:*}" "$SRC"); do
+        sed -i \
+            "s|${path%%:*}|${path//*:}|g" \
+            "$file"
+    done
+done
 
-	if [ -f "${PATCHES_DIR}/locale-gen" ]; then
-		install -m755 "${PATCHES_DIR}/locale-gen" "${DESTDIR:-}${BINDIR}/locale-gen"
-	fi
+# Configure.
 
-	if [ -f "${PATCHES_DIR}/locale.gen.txt" ]; then
-		install -m644 "${PATCHES_DIR}/locale.gen.txt" "${DESTDIR:-}${PREFIX}/etc/locale.gen"
-		if [ -f "${SRCDIR}/localedata/SUPPORTED" ]; then
-			sed -e '1,3d' -e 's|/| |g' -e 's|\\| |g' -e 's|^|#|g' \
-				"${SRCDIR}/localedata/SUPPORTED" >> "${DESTDIR:-}${PREFIX}/etc/locale.gen"
-		fi
-	fi
+cd "$BUILD"
 
-	if [ -f "${SRCDIR}/localedata/SUPPORTED" ]; then
-		mkdir -p "${DESTDIR:-}${PREFIX}/share/i18n"
-		sed -e '1,3d' -e 's|/| |g' -e 's| \\||g' \
-			"${SRCDIR}/localedata/SUPPORTED" > "${DESTDIR:-}${PREFIX}/share/i18n/SUPPORTED"
-	fi
+echo "slibdir=${LIBDIR}" > configparms
+echo "rtlddir=${LIBDIR}" >> configparms
+echo "sbindir=${PREFIX}/bin" >> configparms
+echo "rootsbindir=${PREFIX}/bin" >> configparms
 
-	install -dm755 "${DESTDIR:-}${LIBDIR}/locale"
-	if [ -d "${SRCDIR}/localedata" ]; then
-		make -C "${SRCDIR}/localedata" objdir="${BUILDDIR}" \
-			SUPPORTED-LOCALES="C.UTF-8/UTF-8 en_US.UTF-8/UTF-8" install-locale-files DESTDIR="${DESTDIR:-}" || true
-		sed -i '/#C\.UTF-8 /d' "${DESTDIR:-}${PREFIX}/etc/locale.gen" 2>/dev/null || true
-	fi
+CFLAGS="${CFLAGS/-Wp,-D_FORTIFY_SOURCE=2 / }"
+CFLAGS="${CFLAGS/-Werror / }"
 
-	[ -f "${PATCHES_DIR}/sdt.h" ] && install -Dm644 "${PATCHES_DIR}/sdt.h" "${DESTDIR:-}${INCLUDEDIR}/sys/sdt.h"
-	[ -f "${PATCHES_DIR}/sdt-config.h" ] && install -Dm644 "${PATCHES_DIR}/sdt-config.h" "${DESTDIR:-}${INCLUDEDIR}/sys/sdt-config.h"
+export CFLAGS
 
-	local ld_so_path
-	ld_so_path=$(find "${DESTDIR:-}${LIBDIR}" -name "ld-linux*.so*" | head -n 1)
-	if [ -n "$ld_so_path" ]; then
-		ln -sfr "$ld_so_path" "${DESTDIR:-}${BINDIR}/ld.so"
-		ln -sfr "$ld_so_path" "${DESTDIR:-}${LIBDIR}/ld.so"
-	fi
+"$SRC/configure" \
+    --prefix="$PREFIX" \
+    --libdir="$LIBDIR" \
+    --libexecdir="$LIBDIR" \
+    --includedir="${PREFIX}/include" \
+    --host="$HOST" \
+    --build="$(gcc -dumpmachine)" \
+    --target="$HOST" \
+    --with-bugurl="https://www.gnu.org/software/libc/" \
+    --with-pkgversion="GNU libc for Android AArch64" \
+    --enable-shared \
+    --enable-bind-now \
+    --enable-stack-protector=strong \
+    --enable-fortify-source \
+    --disable-multi-arch \
+    --disable-systemtap \
+    --disable-build-nscd \
+    --disable-nscd \
+    --disable-profile \
+    --disable-default-pie \
+    --disable-timezone-tools \
+    --disable-pt_chown \
+    --disable-sframe \
+    --disable-werror
 
-	make_syscall_without_fsc
+# Build.
 
-	echo "[+] Installation completed successfully!"
-}
+make -O
 
-# ------------------------------------------------------------------------------
-# Step 7: Compression Step
-# ------------------------------------------------------------------------------
-compress_step() {
-	echo "[+] Compiling and compressing rootfs archive..."
-	local archive_name="${BUILDER_DIR}/wingo-rootfs-${TARGET_ARCH}.tar.xz"
+# Install.
 
-	local target_dir="${DESTDIR:-}${PREFIX}"
-	if [ ! -d "${target_dir}" ]; then
-		echo "[-] Error: Directory '${target_dir}' does not exist for compression."
-		return 1
-	fi
+rm -rf "$ROOTFS"
 
-	cd "${target_dir}"
-	tar -cJf "${archive_name}" .
+mkdir -p "$ROOTFS"
 
-	echo "[+] RootFS compressed successfully: ${archive_name}"
-}
+STAGE="$BUILD/glibc-stage"
 
-# ------------------------------------------------------------------------------
-# Execution Pipeline
-# ------------------------------------------------------------------------------
-download_package_step
-extract_package_step
-patch_package_step
-pre_configure_step
-configure_step
-make_step
-install_step
-compress_step
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+
+make \
+    DESTDIR="$STAGE" \
+    elf/ldso_install \
+    install-lib
+
+cp \
+    "$BUILD/libc.so" \
+    "$STAGE/usr/lib/libc.so.6"
+
+mkdir -p "$ROOTFS/usr/lib"
+
+cp -r \
+    "$STAGE/usr/lib/"* \
+    "$ROOTFS/usr/lib/"
+
+make \
+    DESTDIR="$ROOTFS" \
+    install
+
+rm -f "$ROOTFS/etc/ld.so.cache"
+
+rm -f \
+    "$ROOTFS/usr/bin/tzselect" \
+    "$ROOTFS/usr/bin/zdump" \
+    "$ROOTFS/usr/bin/zic"
+
+mkdir -p "$ROOTFS/usr/lib/locale"
+
+make \
+    -C "$SRC/localedata" \
+    objdir="$BUILD" \
+    SUPPORTED-LOCALES="C.UTF-8/UTF-8 en_US.UTF-8/UTF-8" \
+    DESTDIR="$ROOTFS" \
+    install-locale-files
+
+sed -i \
+    '/#C\.UTF-8 /d' \
+    "$ROOTFS/etc/locale.gen"
+
+# Build syscall library.
+
+echo "Compiling libsyscall_without_fsc.so..."
+
+"$CC" \
+    "$GITHUB_WORKSPACE/packages/glibc/syscall.c" \
+    -o "$ROOTFS/usr/lib/libsyscall_without_fsc.so" \
+    -shared \
+    -DWITHOUT_FAKESYSCALL
+
+echo "DONE"
+
+# Compress rootfs.
+
+ROOTFS_ARCHIVE="${GITHUB_WORKSPACE}/packages/glibc/glibc-${PKG_VERSION}-aarch64-rootfs.tar.xz"
+
+rm -f "$ROOTFS_ARCHIVE"
+
+tar -cJf \
+    "$ROOTFS_ARCHIVE" \
+    -C "$ROOTFS" \
+    .
+
+echo
+echo "=========================================="
+echo "glibc AArch64 build completed"
+echo "=========================================="
+echo
+echo "Rootfs : $ROOTFS"
+echo "Archive: $ROOTFS_ARCHIVE"
