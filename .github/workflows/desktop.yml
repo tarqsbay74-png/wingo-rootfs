@@ -1,17 +1,9 @@
-name: SSH to GitHub Runner
-
-on:
-  push:
-  workflow_dispatch:
-
+name: CI
+on: [push]
 jobs:
-  ssh-job:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup SSH Debug Session
-        uses: mxschmitt/action-tmate@v3
-        if: always()
+    - uses: actions/checkout@v4
+    - name: Setup tmate session
+      uses: mxschmitt/action-tmate@v3
