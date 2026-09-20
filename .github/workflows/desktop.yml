@@ -1,71 +1,17 @@
-name: Ubuntu XFCE VNC
+name: SSH to GitHub Runner
 
 on:
+  push:
   workflow_dispatch:
 
 jobs:
-  desktop:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
+  ssh-job:
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Install XFCE and VNC
-        run: |
-          sudo apt-get update
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            xfce4 \
-            xfce4-goodies \
-            tigervnc-standalone-server \
-            dbus-x11 \
-            xterm
-
-      - name: Configure XFCE
-        run: |
-          mkdir -p "$HOME/.vnc"
-
-          cat > "$HOME/.vnc/xstartup" <<'EOF'
-          #!/bin/sh
-          unset SESSION_MANAGER
-          unset DBUS_SESSION_BUS_ADDRESS
-
-          export XDG_CURRENT_DESKTOP=XFCE
-          export XDG_SESSION_DESKTOP=xfce
-
-          exec dbus-launch --exit-with-session startxfce4
-          EOF
-
-          chmod +x "$HOME/.vnc/xstartup"
-
-      - name: Configure VNC password
-        run: |
-          printf '%s\n' 'ZZZZzzzz' \
-            | vncpasswd -f > "$HOME/.vnc/passwd"
-
-          chmod 600 "$HOME/.vnc/passwd"
-
-      - name: Start VNC
-        run: |
-          vncserver -kill :1 2>/dev/null || true
-
-          vncserver :1 \
-            -geometry 1280x720 \
-            -depth 24 \
-            -localhost yes
-
-          echo "VNC started on TCP 5901"
-
-      - name: Start TCP tunnel
-        run: |
-          echo "Starting TCP tunnel..."
-          echo "VNC password: ZZZZzzzz"
-          echo
-
-          ssh -p 443 \
-            -T \
-            -o StrictHostKeyChecking=no \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=3 \
-            -R0:127.0.0.1:5901 \
-            tcp@free.pinggy.io
-            
+      - name: Setup SSH Debug Session
+        uses: mxschmitt/action-tmate@v3
+        if: always()
