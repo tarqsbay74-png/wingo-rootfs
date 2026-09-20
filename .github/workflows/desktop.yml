@@ -55,20 +55,17 @@ jobs:
 
           echo "VNC started on TCP 5901"
 
-      - name: Install SSH client
-        run: |
-          sudo apt-get install -y openssh-client
-
       - name: Start TCP tunnel
         run: |
           echo "Starting TCP tunnel..."
-          echo
           echo "VNC password: ZZZZzzzz"
           echo
 
-          ssh \
+          ssh -p 443 \
+            -T \
             -o StrictHostKeyChecking=no \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=3 \
-            -R0:localhost:5901 \
+            -R0:127.0.0.1:5901 \
             tcp@free.pinggy.io
+            
