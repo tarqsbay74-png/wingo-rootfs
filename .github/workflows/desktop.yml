@@ -1,9 +1,30 @@
-name: CI
-on: [push]
+name: SSH to GitHub Runner
+
+on:
+  workflow_dispatch:
+
 jobs:
-  build:
+  ssh-job:
     runs-on: ubuntu-latest
+
     steps:
-    - uses: actions/checkout@v4
-    - name: Setup tmate session
-      uses: mxschmitt/action-tmate@v3
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Diagnose
+        run: |
+          set -x
+          uname -a
+          id
+          command -v sudo
+          command -v ssh
+          command -v curl
+          command -v wget
+          command -v apt-get
+          curl -I --connect-timeout 10 https://ssh.tmate.io
+          getent hosts ssh.tmate.io
+
+      - name: Tmate
+        uses: mxschmitt/action-tmate@v3
+        with:
+          connect-timeout-seconds: 60
