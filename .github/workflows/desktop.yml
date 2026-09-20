@@ -11,18 +11,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Diagnose
+      - name: Fix DNS
         run: |
-          set -x
-          uname -a
-          id
-          command -v sudo
-          command -v ssh
-          command -v curl
-          command -v wget
-          command -v apt-get
-          curl -I --connect-timeout 10 https://ssh.tmate.io
+          echo "=== Before ==="
+          cat /etc/resolv.conf
+
+          sudo bash -c 'printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf'
+
+          echo "=== After ==="
+          cat /etc/resolv.conf
+
+          echo "=== DNS test ==="
           getent hosts ssh.tmate.io
+
+          echo "=== HTTPS test ==="
+          curl -I --connect-timeout 10 https://ssh.tmate.io
 
       - name: Tmate
         uses: mxschmitt/action-tmate@v3
